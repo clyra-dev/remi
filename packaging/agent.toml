@@ -1,0 +1,6 @@
+# Remi agent · Debian defaults. No credentials belong in this file.
+state_dir = "/var/lib/remi"
+socket_path = "/run/remi/events.sock"
+retention_events = 10000
+# Optional display label; defaults to /etc/hostname.
+# hostname = "production-01"

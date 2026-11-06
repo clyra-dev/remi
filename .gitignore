@@ -1,0 +1,5 @@
+/target/
+/dist/
+/.test/
+.DS_Store
+*.log
