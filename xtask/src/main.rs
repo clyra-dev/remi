@@ -27,7 +27,7 @@ enum Action {
         arch: String,
         #[arg(long, default_value = "target/release")]
         binaries: PathBuf,
-        #[arg(long, default_value = "0.1.0")]
+        #[arg(long, default_value = env!("CARGO_PKG_VERSION"))]
         version: String,
     },
     /// Generate an APT repository and sign its Release metadata with GPG.

@@ -1,6 +1,8 @@
 #[cfg(target_os = "macos")]
 mod app;
 #[cfg(target_os = "macos")]
+mod connections;
+#[cfg(target_os = "macos")]
 mod host_keys;
 #[cfg(target_os = "macos")]
 mod model;

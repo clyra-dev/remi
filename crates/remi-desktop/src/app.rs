@@ -25,6 +25,7 @@ const AMBER: Color32 = Color32::from_rgb(165, 91, 30);
 #[derive(PartialEq)]
 enum Page {
     Activity,
+    Connections,
     Server,
     Preferences,
 }
@@ -42,6 +43,7 @@ struct Tray {
 }
 
 pub struct Remi {
+    connections: crate::connections::Connections,
     state: DesktopState,
     draft: Settings,
     path: PathBuf,
@@ -109,6 +111,7 @@ impl Remi {
         let auto_connect =
             state.settings.auto_connect && !state.settings.host.is_empty() && writable;
         let mut app = Self {
+            connections: crate::connections::Connections::default(),
             draft: state.settings.clone(),
             state,
             path,
@@ -163,6 +166,7 @@ impl Remi {
         }
     }
     fn disconnect(&mut self) {
+        self.connections.reset();
         self.generation += 1;
         if let Some(task) = self.task.take() {
             task.abort();
@@ -221,10 +225,12 @@ impl Remi {
             }
             match envelope.update {
                 Update::Connecting => {
+                    self.connections.reset();
                     self.connected = false;
                     self.status = "Conectando…".into();
                 }
                 Update::Disconnected(error) => {
+                    self.connections.reset();
                     self.connected = false;
                     self.status = "Sin conexión".into();
                     self.error = Some(error);
@@ -246,6 +252,9 @@ impl Remi {
                     self.page = Page::Server;
                 }
                 Update::Frame(frame) => self.receive(frame),
+                Update::ControlReady(sender) => self.connections.ready(sender),
+                Update::ControlReply(reply) => self.connections.reply(reply),
+                Update::ControlUnavailable(message) => self.connections.unavailable(message),
             }
         }
         if self.task.as_ref().is_some_and(|task| task.is_finished()) {
@@ -542,6 +551,7 @@ impl Remi {
                 ui.add_space(42.);
                 for (page, title) in [
                     (Page::Activity, "Actividad"),
+                    (Page::Connections, "Conexiones"),
                     (Page::Server, "Servidor"),
                     (Page::Preferences, "Preferencias"),
                 ] {
@@ -554,7 +564,11 @@ impl Remi {
                     }
                 }
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
-                    ui.label(RichText::new("v0.1.0 · macOS").size(11.).color(MUTED));
+                    ui.label(
+                        RichText::new(concat!("v", env!("CARGO_PKG_VERSION"), " · macOS"))
+                            .size(11.)
+                            .color(MUTED),
+                    );
                     ui.label(
                         RichText::new("Remote Event\nMonitoring Interface")
                             .size(11.)
@@ -1055,6 +1069,11 @@ impl eframe::App for Remi {
                     .auto_shrink([false, false])
                     .show(ui, |ui| match self.page {
                         Page::Activity => self.activity(ui, ctx),
+                        Page::Connections => self.connections.show(
+                            ui,
+                            self.connected && !self.demo && !self.simulated_agent,
+                            &self.state.settings.name,
+                        ),
                         Page::Server => self.server(ui, ctx),
                         Page::Preferences => self.preferences(ui),
                     });

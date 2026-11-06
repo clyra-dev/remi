@@ -3,7 +3,7 @@ use crate::{
     model::{Settings, expand_path},
 };
 use anyhow::{Context, Result, bail};
-use remi_core::{Frame, PROTOCOL, read_line};
+use remi_core::{Frame, PROTOCOL, connections::*, read_line, read_line_bounded};
 use russh::{
     ChannelMsg, client,
     keys::{
@@ -31,6 +31,9 @@ pub enum Update {
     Connecting,
     Frame(Frame),
     Disconnected(String),
+    ControlReady(tokio::sync::mpsc::Sender<ControlRequest>),
+    ControlReply(ControlReply),
+    ControlUnavailable(String),
     HostKey {
         host: String,
         port: u16,
@@ -267,6 +270,26 @@ async fn session(
         .await
         .context("Autenticación SSH agotó el tiempo")??;
     info!(action = "ssh_authenticated");
+    // Separate channels, one SSH transport: no extra login and the same protected socket.
+    let control_task = match ssh.channel_open_session().await {
+        Ok(channel) => {
+            let updates = updates.clone();
+            Some(AbortTask(tokio::spawn(async move {
+                let result = connection_control(channel, &updates).await;
+                if let Err(error) = &result {
+                    warn!(action = "connection_control_unavailable", error = %error);
+                    updates.send(Update::ControlUnavailable(format!("{error:#}")));
+                }
+                result
+            })))
+        }
+        Err(error) => {
+            updates.send(Update::ControlUnavailable(format!(
+                "No se pudo abrir el canal de conexiones: {error}"
+            )));
+            None
+        }
+    };
     let saved = cursor.lock().unwrap().clone();
     let mut command = format!("/usr/bin/remi-agent stream --after {}", saved.sequence);
     if let Some(instance) = &saved.instance {
@@ -324,10 +347,72 @@ async fn session(
         }
     }.await;
     pump.0.abort();
+    drop(control_task);
     let _ = ssh
         .disconnect(russh::Disconnect::ByApplication, "Remi disconnected", "en")
         .await;
     result
+}
+
+async fn connection_control(channel: russh::Channel<client::Msg>, updates: &Updates) -> Result<()> {
+    use tokio::io::AsyncWriteExt;
+    channel
+        .exec(true, "/usr/bin/remi-agent connections")
+        .await?;
+    let (reader, mut writer) = tokio::io::split(channel.into_stream());
+    let mut input = BufReader::new(reader);
+    let hello = tokio::time::timeout(
+        Duration::from_secs(8),
+        read_line_bounded(&mut input, CONTROL_FRAME_BYTES),
+    )
+    .await
+    .context("El canal de conexiones no respondió")??
+    .context("Actualiza remi-agent a 0.2.0 para gestionar conexiones")?;
+    let hello: ControlReply =
+        serde_json::from_str(&hello).context("Respuesta de control incompatible")?;
+    if hello.id != 0
+        || !matches!(
+            hello.result,
+            ControlResult::Ready {
+                protocol: CONTROL_PROTOCOL
+            }
+        )
+    {
+        bail!("Protocolo de conexiones incompatible; actualiza el agente");
+    }
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<ControlRequest>(2);
+    updates.send(Update::ControlReady(tx));
+    info!(action = "connection_control_ready");
+    while let Some(request) = rx.recv().await {
+        let close = matches!(request.action, ControlAction::Close { .. });
+        info!(
+            action = "connection_control_request",
+            request_id = request.id,
+            close
+        );
+        let mut bytes = serde_json::to_vec(&request)?;
+        if bytes.len() >= CONTROL_REQUEST_BYTES {
+            bail!("Solicitud de conexión demasiado grande");
+        }
+        bytes.push(b'\n');
+        let response = tokio::time::timeout(Duration::from_secs(15), async {
+            writer.write_all(&bytes).await?;
+            writer.flush().await?;
+            read_line_bounded(&mut input, CONTROL_FRAME_BYTES)
+                .await?
+                .context("Se cerró el canal de control")
+        })
+        .await
+        .context(
+            "Sin confirmación del servidor; comprueba la conexión antes de repetir un cierre",
+        )??;
+        let reply: ControlReply = serde_json::from_str(&response)?;
+        if reply.id != request.id || matches!(reply.result, ControlResult::Ready { .. }) {
+            bail!("Respuesta de control fuera de secuencia");
+        }
+        updates.send(Update::ControlReply(reply));
+    }
+    Ok(())
 }
 
 pub fn trust_host(settings: &Settings, host: &str, port: u16, openssh_key: &str) -> Result<()> {

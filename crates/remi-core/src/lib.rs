@@ -5,11 +5,20 @@ use ipnet::IpNet;
 use serde::{Deserialize, Serialize};
 use std::{fs, io::Write, net::IpAddr, path::Path};
 
+pub mod connections;
+
 pub const PROTOCOL: u32 = 1;
 pub const MAX_FRAME_BYTES: usize = 64 * 1024;
 
 pub async fn read_line<R: tokio::io::AsyncBufRead + Unpin>(
     reader: &mut R,
+) -> Result<Option<String>> {
+    read_line_bounded(reader, MAX_FRAME_BYTES).await
+}
+
+pub async fn read_line_bounded<R: tokio::io::AsyncBufRead + Unpin>(
+    reader: &mut R,
+    limit: usize,
 ) -> Result<Option<String>> {
     use tokio::io::AsyncBufReadExt;
     let mut line = Vec::new();
@@ -23,7 +32,7 @@ pub async fn read_line<R: tokio::io::AsyncBufRead + Unpin>(
         }
         let newline = available.iter().position(|b| *b == b'\n');
         let take = newline.map(|n| n + 1).unwrap_or(available.len());
-        if line.len() + take > MAX_FRAME_BYTES {
+        if line.len() + take > limit {
             bail!("Mensaje excede el límite del protocolo");
         }
         line.extend_from_slice(&available[..take]);

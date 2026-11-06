@@ -20,6 +20,9 @@ use tokio::{
 };
 use tracing::{error, info, warn};
 
+mod control;
+mod sockets;
+
 #[derive(Parser)]
 #[command(version, about = "Remi: SSH login observation for Debian")]
 struct Cli {
@@ -47,6 +50,11 @@ enum Action {
     Doctor,
     /// Grant a local SSH account read access to Remi events (requires root).
     Authorize { user: String },
+    /// Inspect TCP sockets and explicitly close one through the existing SSH session.
+    Connections,
+    /// Privileged, bounded socket operations; called on demand by connections.
+    #[command(hide = true)]
+    SocketHelper,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -214,8 +222,15 @@ async fn main() -> Result<()> {
         )
         .init();
     let cli = Cli::parse();
+    // Control is independent from the journal config and never elevates the collector.
+    match cli.command {
+        Action::Connections => return control::serve().await,
+        Action::SocketHelper => return control::helper().await,
+        _ => (),
+    }
     let config = Config::load(&cli.config)?;
     match cli.command {
+        Action::Connections | Action::SocketHelper => unreachable!(),
         Action::Run { journal_fixture } => run(config, journal_fixture).await,
         Action::Stream { after, instance } => stream(config, after, instance).await,
         Action::Doctor => doctor(config).await,
