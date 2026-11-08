@@ -13,6 +13,8 @@ pub fn data_dir() -> PathBuf {
         })
 }
 pub fn expand_path(path: &str) -> PathBuf {
+    // Paths are usually pasted into the form; surrounding spaces are never intended.
+    let path = path.trim();
     if let Some(rest) = path.strip_prefix("~/") {
         std::env::home_dir().unwrap_or_default().join(rest)
     } else {
@@ -75,6 +77,13 @@ impl Settings {
         }
         if self.name.trim().is_empty() || self.name.len() > 80 {
             bail!("El nombre debe tener entre 1 y 80 caracteres");
+        }
+        // Finder starts apps in "/", so a relative path would point at the read-only system volume.
+        if !expand_path(&self.known_hosts).is_absolute() {
+            bail!("La ruta de known_hosts (Identidad del servidor) debe empezar por / o ~/");
+        }
+        if !self.use_agent && !expand_path(&self.key_path).is_absolute() {
+            bail!("La ruta de la llave SSH debe empezar por / o ~/");
         }
         if !self.use_agent && !expand_path(&self.key_path).is_file() {
             bail!("No se encontró el archivo de llave SSH");
@@ -189,6 +198,39 @@ mod tests {
         s.port = "0".into();
         assert!(s.validate().is_err());
         assert!(!serde_json::to_string(&s).unwrap().contains("passphrase"));
+    }
+    #[test]
+    fn ssh_paths_must_be_absolute_and_tolerate_pasted_spaces() {
+        let key = tempfile::NamedTempFile::new().unwrap();
+        let mut s = Settings {
+            host: "127.0.0.1".into(),
+            user: "reader".into(),
+            ..Default::default()
+        };
+        for relative in [
+            "",
+            "known_hosts",
+            "known_hosts /Users/reader/.ssh/known_hosts",
+            "~known_hosts",
+        ] {
+            s.known_hosts = relative.into();
+            let error = s.validate().unwrap_err().to_string();
+            assert!(error.contains("known_hosts"), "{relative:?}: {error}");
+        }
+        s.known_hosts = "/tmp/remi/known_hosts".into();
+        assert!(s.validate().is_ok());
+        s.known_hosts = " ~/.ssh/known_hosts \t".into();
+        assert!(s.validate().is_ok());
+        assert_eq!(
+            expand_path(&s.known_hosts),
+            std::env::home_dir().unwrap().join(".ssh/known_hosts")
+        );
+        s.use_agent = false;
+        s.key_path = "id_ed25519".into();
+        let error = s.validate().unwrap_err().to_string();
+        assert!(error.contains("debe empezar"), "{error}");
+        s.key_path = key.path().to_string_lossy().into();
+        assert!(s.validate().is_ok());
     }
     fn entry(id: &str) -> HistoryEntry {
         HistoryEntry {
