@@ -185,7 +185,9 @@ async fn daemon_restart_preserves_identity_and_replays_only_retained_events() {
     for expected in [14, 15] {
         let frame: Frame =
             serde_json::from_str(&read_line(&mut input).await.unwrap().unwrap()).unwrap();
-        assert!(matches!(frame, Frame::Login { event } if event.sequence == expected));
+        assert!(
+            matches!(frame, Frame::Login { event, observer: false } if event.sequence == expected)
+        );
     }
     agent.child.kill().unwrap();
     agent.child.wait().unwrap();
@@ -194,4 +196,47 @@ async fn daemon_restart_preserves_identity_and_replays_only_retained_events() {
     agent.child = spawn(&agent.config, &agent.fixture);
     assert!(!agent.child.wait().unwrap().success());
     assert_eq!(fs::read_to_string(state).unwrap(), "broken");
+}
+
+#[tokio::test]
+async fn stream_does_not_trust_ssh_environment_without_process_identity() {
+    let agent = Agent::start();
+    let Frame::Hello { instance, .. } = agent.ready().await else {
+        panic!()
+    };
+    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_remi-agent"))
+        .arg("--config")
+        .arg(&agent.config)
+        .args(["stream", "--after", "13", "--instance", &instance])
+        .env("SSH_CONNECTION", "192.0.2.10 40000 192.0.2.20 22")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let mut input = BufReader::new(child.stdout.take().unwrap());
+    for index in 0..3 {
+        let line = tokio::time::timeout(Duration::from_secs(3), read_line(&mut input))
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let frame: Frame = serde_json::from_str(&line).unwrap();
+        if index == 0 {
+            assert!(matches!(
+                frame,
+                Frame::Hello {
+                    observer_identified: false,
+                    simulated: true,
+                    ..
+                }
+            ));
+        } else {
+            assert!(
+                matches!(frame, Frame::Login { event, observer: false } if event.sequence == 13 + index)
+            );
+        }
+    }
+    child.kill().await.unwrap();
+    child.wait().await.unwrap();
 }

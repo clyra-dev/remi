@@ -62,6 +62,7 @@ pub struct Remi {
     last_heartbeat: Option<Instant>,
     initial_backlog: u64,
     simulated_agent: bool,
+    observer_identified: bool,
     demo: bool,
     demo_events: Vec<HistoryEntry>,
     demo_counter: u64,
@@ -130,6 +131,7 @@ impl Remi {
             last_heartbeat: None,
             initial_backlog: 0,
             simulated_agent: false,
+            observer_identified: false,
             demo: false,
             demo_events: Vec::new(),
             demo_counter: 0,
@@ -172,6 +174,7 @@ impl Remi {
             task.abort();
         }
         self.connected = false;
+        self.observer_identified = false;
         self.last_heartbeat = None;
         self.status = "Sin conectar".into();
         self.pending.clear();
@@ -225,11 +228,13 @@ impl Remi {
             }
             match envelope.update {
                 Update::Connecting => {
+                    self.observer_identified = false;
                     self.connections.reset();
                     self.connected = false;
                     self.status = "Conectando…".into();
                 }
                 Update::Disconnected(error) => {
+                    self.observer_identified = false;
                     self.connections.reset();
                     self.connected = false;
                     self.status = "Sin conexión".into();
@@ -280,6 +285,7 @@ impl Remi {
                 gap,
                 journal_ready,
                 simulated,
+                observer_identified,
                 ..
             } => {
                 if protocol != PROTOCOL {
@@ -293,6 +299,7 @@ impl Remi {
                 }
                 self.state.instance = Some(instance);
                 self.simulated_agent = simulated;
+                self.observer_identified = observer_identified && !simulated;
                 if !self.save() {
                     self.disconnect();
                     return;
@@ -306,6 +313,8 @@ impl Remi {
                     Some("Hay un intervalo fuera del historial disponible; se recuperaron los eventos conservados".into())
                 } else if resync && latest > 0 {
                     Some("Historial recuperado; los accesos anteriores a esta primera conexión no generan avisos".into())
+                } else if !simulated && !observer_identified {
+                    Some("No se pudo identificar la sesión de Remi; sus accesos también pueden generar avisos".into())
                 } else {
                     None
                 };
@@ -323,6 +332,10 @@ impl Remi {
                     gap,
                     simulated
                 );
+                info!(
+                    action = "observer_identity_received",
+                    identified = self.observer_identified
+                );
             }
             Frame::Heartbeat { journal_ready, .. } => {
                 self.last_heartbeat = Some(Instant::now());
@@ -334,7 +347,7 @@ impl Remi {
                 }
                 .into();
             }
-            Frame::Login { event } => {
+            Frame::Login { event, observer } => {
                 if event.sequence <= self.state.cursor {
                     return;
                 }
@@ -354,8 +367,6 @@ impl Remi {
                         return;
                     }
                 };
-                let should_notify =
-                    event.sequence > self.initial_backlog && policy.notify(event.source_ip);
                 let entry = HistoryEntry {
                     id: format!(
                         "{}:{}:{}",
@@ -367,8 +378,11 @@ impl Remi {
                     expected: policy.expected(event.source_ip),
                     notified: false,
                     simulated: self.simulated_agent,
+                    observer: observer && self.observer_identified,
                     event,
                 };
+                let reason = entry.alert_reason(&policy, self.initial_backlog);
+                let should_notify = reason == "alert";
                 // Preserve both event and cursor in one atomic snapshot before acknowledging receipt.
                 let previous = self.state.clone();
                 self.state.cursor = entry.event.sequence;
@@ -389,6 +403,8 @@ impl Remi {
                     action = "login_evaluated",
                     sequence = entry.event.sequence,
                     expected = entry.expected,
+                    observer = entry.observer,
+                    reason,
                     alert = should_notify
                 );
             }
@@ -464,6 +480,7 @@ impl Remi {
             .unwrap(),
             source_port: 51432,
             method: "publickey".into(),
+            origin: None,
         };
         let entry = HistoryEntry {
             id: format!("demo-{}", uuid::Uuid::new_v4()),
@@ -472,6 +489,7 @@ impl Remi {
             expected,
             notified: false,
             simulated: true,
+            observer: false,
         };
         if !expected {
             self.pending.push(entry.clone());
@@ -637,7 +655,7 @@ impl Remi {
         } else {
             self.state.history.clone()
         };
-        let unexpected = entries.iter().filter(|e| !e.expected).count();
+        let unexpected = entries.iter().filter(|e| e.needs_attention()).count();
         ui.columns(3, |columns| {
             for (column, title, value) in [
                 (0, "ACCESOS GUARDADOS", entries.len().to_string()),
@@ -697,7 +715,7 @@ impl Remi {
             .id_salt("history")
             .show(ui, |ui| {
                 for entry in entries.iter().filter(|e| {
-                    (!self.only_alerts || !e.expected)
+                    (!self.only_alerts || e.needs_attention())
                         && format!("{} {} {}", e.event.user, e.event.source_ip, e.server)
                             .to_lowercase()
                             .contains(&filter)
@@ -706,7 +724,13 @@ impl Remi {
                     let selected = self.selected.as_deref() == Some(&entry.id);
                     let label = format!(
                         "{}   {}  ·  {}\n      {}  ·  {}",
-                        if entry.expected { "OK" } else { "!" },
+                        if entry.observer {
+                            "Remi"
+                        } else if entry.expected {
+                            "OK"
+                        } else {
+                            "!"
+                        },
                         entry.event.user,
                         entry.event.source_ip,
                         entry.server,
@@ -718,10 +742,10 @@ impl Remi {
                     );
                     let response = ui.add_sized(
                         [ui.available_width(), 63.],
-                        egui::Button::new(RichText::new(label).color(if entry.expected {
-                            INK
-                        } else {
+                        egui::Button::new(RichText::new(label).color(if entry.needs_attention() {
                             AMBER
+                        } else {
+                            INK
                         }))
                         .selected(selected),
                     );
@@ -735,7 +759,9 @@ impl Remi {
                     if selected {
                         card(ui, |ui| {
                             ui.label(
-                                RichText::new(if entry.expected {
+                                RichText::new(if entry.observer {
+                                    "Conexión de Remi · registrada sin aviso"
+                                } else if entry.expected {
                                     "Origen dentro de tu lista permitida"
                                 } else {
                                     "Origen fuera de tu lista permitida al recibir el evento"
@@ -856,7 +882,10 @@ impl Remi {
         ui.add_space(16.);
         ui.collapsing("Preparar Debian", |ui| {
             ui.label("Instala el paquete .deb y autoriza a tu usuario SSH como lector.");
-            ui.monospace("sudo apt install ./remi-agent_0.1.0_arm64.deb");
+            ui.monospace(format!(
+                "sudo apt install ./remi-agent_{}_arm64.deb",
+                env!("CARGO_PKG_VERSION")
+            ));
             ui.monospace("sudo remi-agent authorize TU_USUARIO");
             ui.label("Vuelve a iniciar sesión SSH después de autorizar al usuario.");
             ui.label("Usa el paquete amd64 si tu servidor tiene un procesador Intel o AMD.");
@@ -877,6 +906,11 @@ impl Remi {
                 &mut self.draft.alert_mode,
                 AlertMode::All,
                 "Todos los accesos SSH",
+            );
+            ui.label(
+                RichText::new("Las conexiones identificadas como Remi se guardan sin avisos.")
+                    .small()
+                    .color(MUTED),
             );
             ui.add_space(8.);
             ui.label("IP y redes permitidas");

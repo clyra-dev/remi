@@ -11,6 +11,7 @@ All application, interface, transport, agent, packaging-helper and build-tool co
 - One Debian server; successful SSH authentication (IPv4 / IPv6).
 - Native macOS notifications, history, server status and an explicit demo mode.
 - All-login alerts or IP/CIDR allowlists; first-sync history is quiet, missed subsequent events are recovered.
+- Remi's own SSH sessions stay in history without desktop alerts; other sessions from the same IP still follow your alert policy.
 - Dedicated `remi` service account, durable bounded history, systemd service, `.deb` lifecycle, signed APT repository generation.
 - SSH host identity verification and authentication using an SSH agent or private-key file. Passphrases are held in memory, never persisted.
 - Live TCP connections and listening ports, IPv4 / IPv6, with socket owner, process name and PID where visible.
@@ -23,7 +24,7 @@ TCP connection alerts, UDP control, stopping listening services and multiple ser
 Supported packaging targets: Debian 12 / 13, `arm64` and `amd64`, with systemd and OpenSSH. Use the package matching your machine (`dpkg --print-architecture`).
 
 ```sh
-sudo apt install ./remi-agent_0.2.0_arm64.deb
+sudo apt install ./remi-agent_0.2.1_arm64.deb
 sudo remi-agent authorize YOUR_SSH_USER
 ```
 
@@ -49,7 +50,9 @@ The demo uses reserved documentation addresses and is visibly marked. It does no
 
 Desktop state: `~/Library/Application Support/Remi/state.json` (2,000 events). Diagnostic logs: its `logs/` folder, rotated daily, retaining seven files. Files contain event metadata, not passwords, key contents, SSH command history or full journal messages. `REMI_DATA_DIR` selects a separate directory for acceptance tests. A corrupted state file is preserved and saving is disabled rather than silently overwriting it.
 
-The SSH connection opened by Remi is itself a successful login and is recorded. Permit your Mac's public IP/network if these accesses should be quiet. Policies classify events when they arrive; changing a policy does not rewrite the classification of old history. Closing the app pauses desktop alerts while the server continues collecting.
+With desktop and agent 0.2.1 or newer, the SSH connection opened by Remi is recorded as **Conexión de Remi · registrada sin aviso**, including reconnects after sleep or network loss. It is excluded from the outside-allowlist count/filter without changing your allowlist or alert mode. Other SSH sessions from the same IP/user/key still follow your policy. Identification uses the server-reported source endpoint, trusted journal boot/PID/monotonic timestamp, and the reader's actual SSH process ancestry; a reused PID or port from an earlier session does not match. Classification is specific to each reader and never changes the collector's shared history.
+
+If identity metadata is missing or cannot be verified, normal alerts remain enabled. Older agents show an identification notice, and old history is not retroactively labeled as Remi. Journal origin metadata contains process identity, not key fingerprints or command contents. Policies classify events when they arrive; changing a policy does not rewrite the classification of old history. Closing the app pauses desktop alerts while the server continues collecting.
 
 ## Live connections
 

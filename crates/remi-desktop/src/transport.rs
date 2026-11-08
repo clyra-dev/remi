@@ -20,7 +20,7 @@ use std::{
     time::Duration,
 };
 use tokio::io::BufReader;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 #[derive(Clone)]
 pub struct Cursor {
@@ -314,9 +314,9 @@ async fn session(
         while let Some(message) = channel.wait().await {
             match message {
                 ChannelMsg::Data { data } => writer.write_all(&data).await?,
-                ChannelMsg::ExtendedData { .. } => warn!(
+                ChannelMsg::ExtendedData { .. } => debug!(
                     action = "remote_agent_diagnostic",
-                    "El agente remoto emitió un error; verifica instalación y grupo remi"
+                    "El agente remoto emitió un diagnóstico"
                 ),
                 ChannelMsg::ExitStatus { exit_status } if exit_status != 0 => bail!(
                     "remi-agent terminó con código {exit_status}; verifica instalación y grupo remi"

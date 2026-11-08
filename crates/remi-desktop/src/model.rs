@@ -98,6 +98,26 @@ pub struct HistoryEntry {
     pub expected: bool,
     pub notified: bool,
     pub simulated: bool,
+    #[serde(default)]
+    pub observer: bool,
+}
+
+impl HistoryEntry {
+    pub fn needs_attention(&self) -> bool {
+        !self.expected && !self.observer
+    }
+
+    pub fn alert_reason(&self, policy: &Policy, initial_backlog: u64) -> &'static str {
+        if self.observer {
+            "observer_session"
+        } else if self.event.sequence <= initial_backlog {
+            "initial_history"
+        } else if !policy.notify(self.event.source_ip) {
+            "allowed_source"
+        } else {
+            "alert"
+        }
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -177,6 +197,7 @@ mod tests {
             expected: false,
             notified: false,
             simulated: id.starts_with("demo-"),
+            observer: false,
             event: Login {
                 sequence: 1,
                 timestamp: chrono::Utc::now(),
@@ -184,6 +205,7 @@ mod tests {
                 source_ip: "192.0.2.1".parse().unwrap(),
                 source_port: 45000,
                 method: "publickey".into(),
+                origin: None,
             },
         }
     }
@@ -206,6 +228,55 @@ mod tests {
         assert_eq!(
             notification_target("server:old", &history, &demo),
             NotificationTarget::Missing
+        );
+    }
+    #[test]
+    fn own_login_stays_in_history_without_alerting_but_same_ip_other_session_alerts() {
+        let mut own = entry("server:1");
+        own.observer = true;
+        let other = entry("server:2");
+        for mode in [AlertMode::All, AlertMode::OutsideAllowlist] {
+            let policy = Policy::parse(mode, "").unwrap();
+            assert_eq!(own.alert_reason(&policy, 0), "observer_session");
+            assert!(!own.needs_attention());
+            assert_eq!(other.event.source_ip, own.event.source_ip);
+            assert_eq!(other.alert_reason(&policy, 0), "alert");
+            assert!(other.needs_attention());
+            assert_eq!(other.alert_reason(&policy, 1), "initial_history");
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        let mut state = DesktopState::default();
+        assert!(state.add(own));
+        assert!(state.add(other));
+        state.save(&path).unwrap();
+        let restored = DesktopState::load(&path).unwrap();
+        assert_eq!(restored.history.len(), 2);
+        assert!(!restored.history[0].observer);
+        assert!(restored.history[1].observer);
+        assert!(!restored.history[1].notified);
+    }
+
+    #[test]
+    fn old_history_is_not_reclassified_and_allowlist_modes_are_preserved() {
+        let old = entry("old");
+        let mut value = serde_json::to_value(&old).unwrap();
+        value.as_object_mut().unwrap().remove("observer");
+        value["event"].as_object_mut().unwrap().remove("origin");
+        let restored: HistoryEntry = serde_json::from_value(value).unwrap();
+        assert!(!restored.observer);
+        assert!(restored.needs_attention());
+        let allow = old.event.source_ip.to_string();
+        assert_eq!(
+            restored.alert_reason(
+                &Policy::parse(AlertMode::OutsideAllowlist, &allow).unwrap(),
+                0
+            ),
+            "allowed_source"
+        );
+        assert_eq!(
+            restored.alert_reason(&Policy::parse(AlertMode::All, &allow).unwrap(), 0),
+            "alert"
         );
     }
     #[test]

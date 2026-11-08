@@ -21,6 +21,7 @@ use tokio::{
 use tracing::{error, info, warn};
 
 mod control;
+mod observer;
 mod sockets;
 
 #[derive(Parser)]
@@ -612,6 +613,7 @@ async fn serve(
         resync,
         gap,
         simulated: snapshot.simulated,
+        observer_identified: false,
     };
     drop(snapshot);
     send(&mut write, hello).await?;
@@ -631,7 +633,7 @@ async fn serve(
                 let events: Vec<_> = snapshot.store.entries.iter().filter(|e| e.event.sequence > cursor).map(|e| e.event.clone()).collect();
                 let heartbeat = Frame::Heartbeat { latest: snapshot.store.latest(), journal_ready: snapshot.journal_ready };
                 drop(snapshot);
-                for event in events { cursor = event.sequence; send(&mut write, Frame::Login { event }).await?; }
+                for event in events { cursor = event.sequence; send(&mut write, Frame::Login { event, observer: false }).await?; }
                 if ticks % 5 == 0 { send(&mut write, heartbeat).await?; }
                 ticks += 1;
             }
@@ -653,7 +655,51 @@ async fn stream(config: Config, after: u64, instance: Option<String>) -> Result<
     })?;
     request.push(b'\n');
     socket.write_all(&request).await?;
-    tokio::io::copy(&mut socket, &mut tokio::io::stdout()).await?;
+    // This annotation belongs only to this SSH reader, never to the shared store.
+    let observer = match observer::StreamObserver::identify() {
+        Ok(observer) => Some(observer),
+        Err(error) => {
+            warn!(action = "observer_identity_unavailable", error = %error);
+            None
+        }
+    };
+    let mut input = BufReader::new(socket);
+    let mut output = tokio::io::stdout();
+    let mut simulated = true;
+    while let Some(line) = read_line(&mut input).await? {
+        let mut frame: Frame = serde_json::from_str(&line)?;
+        match &mut frame {
+            Frame::Hello {
+                simulated: is_simulated,
+                observer_identified,
+                ..
+            } => {
+                simulated = *is_simulated;
+                *observer_identified = !simulated && observer.is_some();
+                info!(
+                    action = "observer_identity_checked",
+                    identified = *observer_identified
+                );
+            }
+            Frame::Login {
+                event,
+                observer: own,
+            } => {
+                *own = !simulated && observer.as_ref().is_some_and(|o| o.matches(event));
+                if *own {
+                    info!(
+                        action = "observer_login_identified",
+                        sequence = event.sequence
+                    );
+                }
+            }
+            _ => (),
+        }
+        let mut data = serde_json::to_vec(&frame)?;
+        data.push(b'\n');
+        output.write_all(&data).await?;
+        output.flush().await?;
+    }
     Ok(())
 }
 
@@ -742,6 +788,7 @@ mod tests {
             source_ip: "192.0.2.4".parse().unwrap(),
             source_port: 40000,
             method: "publickey".into(),
+            origin: None,
         }
     }
     #[test]
@@ -874,7 +921,9 @@ mod tests {
         for seq in 11..=20 {
             let frame: Frame =
                 serde_json::from_str(&read_line(&mut input).await.unwrap().unwrap()).unwrap();
-            assert!(matches!(frame, Frame::Login { event } if event.sequence == seq));
+            assert!(
+                matches!(frame, Frame::Login { event, observer: false } if event.sequence == seq)
+            );
         }
         stop.send(true).unwrap();
         task.await.unwrap().unwrap();

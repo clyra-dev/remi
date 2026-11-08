@@ -51,6 +51,34 @@ pub struct Login {
     pub source_ip: IpAddr,
     pub source_port: u16,
     pub method: String,
+    /// Trusted journal identity; absent in history collected before 0.2.1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<JournalOrigin>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct JournalOrigin {
+    pub boot_id: String,
+    pub pid: u32,
+    pub monotonic_micros: u64,
+}
+
+impl JournalOrigin {
+    fn parse(value: &serde_json::Value) -> Option<Self> {
+        let boot_id = value.get("_BOOT_ID")?.as_str()?;
+        if boot_id.len() != 32 || !boot_id.bytes().all(|c| c.is_ascii_hexdigit()) {
+            return None;
+        }
+        let pid = value.get("_PID")?.as_str()?.parse::<u32>().ok()?;
+        if pid == 0 {
+            return None;
+        }
+        Some(Self {
+            boot_id: boot_id.to_ascii_lowercase(),
+            pid,
+            monotonic_micros: value.get("__MONOTONIC_TIMESTAMP")?.as_str()?.parse().ok()?,
+        })
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -74,9 +102,14 @@ pub enum Frame {
         resync: bool,
         gap: bool,
         simulated: bool,
+        #[serde(default)]
+        observer_identified: bool,
     },
     Login {
         event: Login,
+        /// Per-reader annotation, never a global allowlist or a collector-state flag.
+        #[serde(default)]
+        observer: bool,
     },
     Heartbeat {
         latest: u64,
@@ -183,6 +216,7 @@ pub fn parse_journal(value: &serde_json::Value) -> Option<(String, Login)> {
             source_ip: fields[5].parse().ok()?,
             source_port: fields[7].parse::<u16>().ok().filter(|port| *port > 0)?,
             method: fields[1].to_string(),
+            origin: JournalOrigin::parse(value),
         },
     ))
 }
@@ -241,6 +275,44 @@ mod tests {
             ))
             .is_some()
         );
+    }
+    #[test]
+    fn journal_origin_uses_trusted_fields_and_missing_metadata_keeps_the_login() {
+        let mut value = record("Accepted publickey for admin from 192.0.2.10 port 45000 ssh2");
+        value["_PID"] = "123".into();
+        value["_BOOT_ID"] = "0123456789ABCDEF0123456789ABCDEF".into();
+        value["__MONOTONIC_TIMESTAMP"] = "20000000".into();
+        let (_, event) = parse_journal(&value).unwrap();
+        assert_eq!(
+            event.origin,
+            Some(JournalOrigin {
+                boot_id: "0123456789abcdef0123456789abcdef".into(),
+                pid: 123,
+                monotonic_micros: 20_000_000,
+            })
+        );
+        for field in ["_PID", "_BOOT_ID", "__MONOTONIC_TIMESTAMP"] {
+            let mut invalid = value.clone();
+            invalid[field] = "invalid".into();
+            assert!(parse_journal(&invalid).unwrap().1.origin.is_none());
+        }
+        value.as_object_mut().unwrap().remove("_PID");
+        value["SYSLOG_PID"] = "123".into();
+        assert!(parse_journal(&value).unwrap().1.origin.is_none());
+    }
+
+    #[test]
+    fn old_login_frames_remain_visible_and_new_metadata_is_optional() {
+        let value = serde_json::json!({"type":"login", "event":{
+            "sequence":12,"timestamp":"2026-11-08T00:00:00Z","user":"admin",
+            "source_ip":"192.0.2.10","source_port":45000,"method":"publickey"
+        }});
+        let Frame::Login { event, observer } = serde_json::from_value::<Frame>(value).unwrap()
+        else {
+            panic!()
+        };
+        assert!(!observer);
+        assert!(event.origin.is_none());
     }
     #[test]
     fn rejects_failed_logins_spoofed_journal_metadata_and_malformed_records() {
