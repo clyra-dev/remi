@@ -24,7 +24,7 @@ TCP connection alerts, UDP control, stopping listening services and multiple ser
 Supported packaging targets: Debian 12 / 13, `arm64` and `amd64`, with systemd and OpenSSH. Use the package matching your machine (`dpkg --print-architecture`).
 
 ```sh
-sudo apt install ./remi-agent_0.3.0_arm64.deb
+sudo apt install ./remi-agent_0.4.0_arm64.deb
 sudo remi-agent authorize YOUR_SSH_USER
 ```
 
@@ -56,9 +56,15 @@ If identity metadata is missing or cannot be verified, normal alerts remain enab
 
 ## Live connections
 
-Open **Conexiones** with desktop and agent 0.3.0. The default **Servicios** view groups listening sockets by local port, merges IPv4/IPv6 bindings and shows process names plus connection/client counts. Loopback-only services are hidden until **Incluir internos** is selected. The summary updates every ten seconds in port order; connection churn does not reorder cards. A network binding means the process listens on that interface, not that a firewall or cloud policy exposes it publicly.
+Open **Conexiones** with desktop and agent 0.4.0. The default **Servicios** view groups listening sockets by local port, merges IPv4/IPv6 bindings and shows process names, recognized purposes and connection/client counts. Recognition uses observed process names rather than assuming a protocol from a port number. Loopback-only services are hidden until **Incluir internos** is selected. The summary updates every ten seconds in port order; connection churn does not reorder cards. A network binding means the process listens on that interface, not that a firewall or cloud policy exposes it publicly.
 
-Choose **Ver conexiones** to inspect one port. This detail view stays fixed until **Actualizar**, reconnect or a confirmed close; search, selection and pagination remain under your control. Only six rows are rendered per page. **Vista técnica** exposes the general TCP sample and can query a specific local port. The most recent data remains visible but non-actionable during disconnects, and changing servers clears the cache.
+Choose **Ver servicio** to open its summary, then **Conexiones individuales** to inspect sockets. This detail view stays fixed until **Actualizar**, reconnect or a confirmed close; search, selection and pagination remain under your control. Only six socket rows are rendered per page. **Vista técnica** exposes the general TCP sample and can query a specific local port. The most recent data remains visible but non-actionable during disconnects, and changing servers clears the cache.
+
+**Recognition in 0.4.0:** Linux `INET_DIAG_INFO` / `TCP_INFO` supplies payload recency. Established connections with data sent or received less than 10,000 ms before capture count as recent; older payload or no payload yet counts as quiet. Connecting/closing states and missing metrics remain separate. These are TCP data observations, not active HTTP request counts, people, WebSocket classification or threat scores. Acknowledgments alone do not count as payload. Counts are calculated before detail truncation. Old agents remain readable with explicitly unavailable activity metadata.
+
+For a port owned by Nginx, the summary reads a catalog of HTTP `server` blocks from `/etc/nginx/nginx.conf` and includes contained within `/etc/nginx`. It shows literal server names, explicit TLS configuration and `proxy_pass` authorities, resolving literal upstream groups. Search accepts site names, configuration basenames and destinations. Shared ports do **not** associate a live socket with an individual site. This is configuration **on disk**, which may differ from the loaded configuration after an un-reloaded edit. Custom configuration roots, other network namespaces, runtime variables, unsupported syntax and unreadable/outside-tree includes can leave the catalog partial; Remi marks that condition. It does not reload Nginx or enable access logs.
+
+Configuration inspection runs only on an explicit port read, within the existing helper's permissions. It does not execute Nginx, inspect traffic contents, or return request paths, query strings, credentials, header values, certificates or full configurations. Reads are bounded to 1 MiB, 96 file reads and depth 32; cycles, nonregular files and symlink escapes are rejected. The response includes at most 64 sites, 16 names/destinations per site and 64 KiB of catalog metadata. Recognition logs include port, file/site counts and completeness, without configuration contents. The UAPI layout is documented in Linux's [TCP header](https://github.com/torvalds/linux/blob/v6.1/include/uapi/linux/tcp.h); Nginx explains its [configuration and reload behavior](https://nginx.org/en/docs/beginners_guide.html).
 
 The agent computes service counts before limiting detail rows and prioritizes listeners. It reports up to 256 port groups; detail queries contain at most 1,024 rows with explicit truncation. A per-port query filters on the server before the detail sample is bounded, so busy unrelated services cannot consume its whole sample. Other listener metadata may reserve part of that bound. Older agents remain usable with an explicitly partial summary and no scoped query support. Socket ownership is the kernel UID; for SSH it may be `root`/`sshd`, rather than the authenticated login user shown in Activity. The list covers the agent's network namespace; sockets inside separate Docker/container namespaces are not enumerated. TIME_WAIT and CLOSED entries are omitted.
 
@@ -125,6 +131,8 @@ Contributions target `staging`. Run formatting, Clippy, tests and applicable vis
 ## Validation of this MVP
 
 The 2026-11-09 [mutation audit](tests/MUTATIONS.md) deliberately introduced 32 compiling behavioral faults: the original tests detected 18; strengthened tests detect all 32 in this curated sample. Two behavior-preserving controls still pass. Reproduce the native audit with `cargo xtask mutate`, or the Linux socket cases with `cargo xtask mutate --linux` inside a disposable Linux environment.
+
+Service recognition 0.4.0 was checked on 2026-11-09 UTC with 57 passing macOS tests, 42 passing Linux tests, four manually introduced behavioral faults detected by unchanged tests, and visible acceptance against actual Debian testing; see [recognition evidence](tests/RECOGNITION.md) for commands, observed failures, restoration, UI checks and limits.
 
 Service administration 0.3.0 was checked on 2026-11-09 UTC with 43 passing macOS tests, 30 passing Linux tests and visible interaction against the actual Debian testing server; see [service-view acceptance](tests/SERVICES.md) for stable detail, scoped queries, reconnect and disposable-session closure checks.
 

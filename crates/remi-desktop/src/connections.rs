@@ -30,6 +30,8 @@ pub struct Connections {
     page: usize,
     filter: String,
     port_query: String,
+    port_detail: bool,
+    site_filter: String,
     internal: bool,
     auto_refresh: bool,
     needs_refresh: bool,
@@ -53,6 +55,8 @@ impl Default for Connections {
             page: 0,
             filter: String::new(),
             port_query: String::new(),
+            port_detail: false,
+            site_filter: String::new(),
             internal: false,
             auto_refresh: true,
             needs_refresh: true,
@@ -99,6 +103,8 @@ impl Connections {
         self.view = view;
         self.page = 0;
         self.filter.clear();
+        self.site_filter.clear();
+        self.port_detail = false;
         self.needs_refresh = true;
         self.pending = None;
         self.notice = None;
@@ -159,6 +165,9 @@ impl Connections {
                     return;
                 }
                 self.scoped_reads = snapshot.overview.is_some();
+                if let Some(context) = &snapshot.nginx {
+                    info!(action = "service_recognition_received", port = ?snapshot.port, sites = context.sites.len(), files = context.files_read, partial = context.partial);
+                }
                 let overview = snapshot
                     .overview
                     .clone()
@@ -224,7 +233,7 @@ impl Connections {
                     .iter()
                     .filter(|s| {
                         (self.internal || !s.local_only())
-                            && format!("{} {} {:?}", s.port, s.name(), s.addresses)
+                            && format!("{} {} {} {:?}", s.port, s.name(), s.purpose(), s.addresses)
                                 .to_lowercase()
                                 .contains(&query)
                     })
@@ -441,6 +450,9 @@ impl Connections {
                                 ui.horizontal(|ui| {
                                     ui.vertical(|ui| {
                                         ui.label(
+                                            RichText::new(service.purpose()).small().color(MUTED),
+                                        );
+                                        ui.label(
                                             RichText::new(format!(
                                                 "{} · {}",
                                                 service.name(),
@@ -461,7 +473,7 @@ impl Connections {
                                     ui.with_layout(
                                         egui::Layout::right_to_left(egui::Align::Center),
                                         |ui| {
-                                            if ui.button("Ver conexiones").clicked() {
+                                            if ui.button("Ver servicio").clicked() {
                                                 self.change_view(View::Port(service.port));
                                             }
                                             ui.label(format!(
@@ -471,6 +483,16 @@ impl Connections {
                                         },
                                     );
                                 });
+                                if let Some(traffic) = &service.traffic {
+                                    ui.label(
+                                        RichText::new(format!(
+                                            "{} con datos recientes · {} sin datos recientes · {} en transición · {} sin información",
+                                            traffic.recent, traffic.quiet, traffic.transitioning, traffic.unavailable
+                                        ))
+                                        .small()
+                                        .color(MUTED),
+                                    );
+                                }
                             });
                     });
                     ui.add_space(4.);
@@ -509,6 +531,33 @@ impl Connections {
                 );
             } else {
                 ui.colored_label(AMBER, "Este puerto ya no aparece en escucha.");
+            }
+            if !self.matches_view() {
+                ui.label("Cargando el servicio…");
+                return;
+            }
+            ui.horizontal(|ui| {
+                for (detail, label) in [
+                    (false, "Resumen del servicio"),
+                    (true, "Conexiones individuales"),
+                ] {
+                    if ui
+                        .selectable_label(self.port_detail == detail, label)
+                        .clicked()
+                        && self.port_detail != detail
+                    {
+                        self.port_detail = detail;
+                        info!(
+                            action = "service_detail_tab_changed",
+                            port,
+                            connections = detail
+                        );
+                    }
+                }
+            });
+            if !self.port_detail {
+                self.show_service_context(ui, port);
+                return;
             }
         } else {
             ui.label(
@@ -580,6 +629,15 @@ impl Connections {
                         });
                         ui.label(RichText::new(format!("{} ↔ {}", row.key.local, row.key.remote)).small().color(MUTED));
                         ui.collapsing("Detalles", |ui| {
+                            if row.state != 10 {
+                                ui.label(match &row.traffic {
+                                    Some(traffic) => match traffic.last_data_ago_ms {
+                                        Some(ms) => format!("Últimos datos TCP: hace {:.1} s al capturar", f64::from(ms) / 1000.),
+                                        None => "Sin datos TCP transferidos desde la apertura".into(),
+                                    },
+                                    None => "Actividad TCP no disponible".into(),
+                                });
+                            }
                             ui.label(format!("Usuario del proceso: {}", row.user));
                             for process in &row.processes { ui.label(format!("{} · PID {}", process.name, process.pid)); }
                             if row.processes.is_empty() { ui.label("Proceso no disponible"); }
@@ -593,6 +651,68 @@ impl Connections {
             ui.label("No hay conexiones que coincidan con esta vista.");
         }
         self.pagination(ui, total);
+    }
+    fn show_service_context(&mut self, ui: &mut egui::Ui, port: u16) {
+        let service = self
+            .overview
+            .as_ref()
+            .and_then(|o| o.service(port))
+            .cloned();
+        let nginx = self.snapshot.as_ref().and_then(|s| s.nginx.as_ref());
+        egui::ScrollArea::vertical().id_salt(("service-context", port)).show(ui, |ui| {
+            if let Some(service) = service {
+                ui.add_space(10.);
+                ui.label(format!("{} conexiones · {} direcciones IP", service.connections, service.clients));
+                if let Some(traffic) = &service.traffic {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(RichText::new(format!("{} con datos en los últimos 10 s", traffic.recent)).color(GREEN));
+                        ui.label(format!("{} sin datos recientes", traffic.quiet));
+                        if traffic.transitioning > 0 { ui.label(format!("{} en transición TCP", traffic.transitioning)); }
+                        if traffic.unavailable > 0 { ui.label(format!("{} sin información de actividad", traffic.unavailable)); }
+                    });
+                } else {
+                    ui.label("Actividad no disponible · requiere agente 0.4.0.");
+                }
+                ui.collapsing("Cómo interpretar estos datos", |ui| {
+                    ui.label("Actividad de datos TCP al capturar; no cuenta personas ni peticiones HTTP activas.");
+                    if service.is_nginx() {
+                        ui.label("Nginx comparte el puerto entre varios sitios; una conexión TCP no indica a cuál pertenece.");
+                        ui.label("Fuente: archivos de /etc/nginx; los cambios en disco pueden estar pendientes de recarga.");
+                    }
+                });
+                if service.is_nginx() {
+                    ui.add_space(14.);
+                    ui.label(RichText::new("Sitios configurados en este puerto").strong());
+                    ui.label(RichText::new("Configuración en disco · no identifica el sitio de cada conexión.").small().color(MUTED));
+                    if let Some(nginx) = nginx {
+                        if nginx.partial {
+                            ui.colored_label(AMBER, "Catálogo parcial: hay archivos o directivas que Remi no pudo interpretar.");
+                        }
+                        ui.add(egui::TextEdit::singleline(&mut self.site_filter).hint_text("Buscar sitio o destino").desired_width(320.));
+                        let query = self.site_filter.to_lowercase();
+                        let sites: Vec<_> = nginx.sites.iter().filter(|s| format!("{} {} {}", s.source, s.names.join(" "), s.backends.join(" ")).to_lowercase().contains(&query)).collect();
+                        ui.label(RichText::new(format!("{} sitios · {} archivos consultados", sites.len(), nginx.files_read)).small().color(MUTED));
+                        for (i, site) in sites.iter().enumerate() {
+                            ui.push_id(("nginx-site", i), |ui| {
+                                egui::Frame::new().fill(Color32::WHITE).corner_radius(8).inner_margin(10).show(ui, |ui| {
+                                    ui.set_width(ui.available_width());
+                                    ui.label(RichText::new(if site.names.is_empty() { site.source.clone() } else { site.names.join(" · ") }).strong());
+                                    ui.label(RichText::new(format!("{} · {}", site.source, if site.tls { "TLS configurado" } else { "Sin TLS explícito en listen" })).small().color(MUTED));
+                                    if site.backends.is_empty() { ui.label("Sin destino proxy identificado en las directivas leídas."); }
+                                    for backend in &site.backends { ui.label(format!("Destino: {backend}")); }
+                                });
+                            });
+                            ui.add_space(5.);
+                        }
+                        if sites.is_empty() { ui.label("No hay sitios que coincidan con esta consulta."); }
+                    } else {
+                        ui.label("Catálogo no disponible · requiere agente 0.4.0 y acceso a la configuración estándar de Debian.");
+                    }
+                }
+            } else {
+                ui.label("No hay información de un servicio en escucha para este puerto.");
+            }
+        });
     }
     fn clamp_page(&mut self, count: usize) {
         self.page = self.page.min(count.saturating_sub(1) / PAGE_SIZE);
@@ -660,6 +780,7 @@ mod tests {
             limitation: None,
             port: None,
             overview: None,
+            nginx: None,
             connections: vec![TcpConnection {
                 key: SocketKey {
                     local: "127.0.0.1:22".parse().unwrap(),
@@ -673,6 +794,7 @@ mod tests {
                 user: "root".into(),
                 processes: vec![],
                 protected: false,
+                traffic: None,
             }],
         }
     }

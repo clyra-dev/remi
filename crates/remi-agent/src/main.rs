@@ -21,8 +21,12 @@ use tokio::{
 use tracing::{error, info, warn};
 
 mod control;
+#[cfg(any(target_os = "linux", test))]
+mod nginx;
 mod observer;
 mod sockets;
+#[cfg(any(target_os = "linux", test))]
+mod tcp_info;
 
 #[derive(Parser)]
 #[command(version, about = "Remi: SSH login observation for Debian")]

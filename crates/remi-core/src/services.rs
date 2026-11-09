@@ -7,6 +7,48 @@ use std::{
 };
 
 pub const SERVICE_LIMIT: usize = 256;
+pub const RECENT_TRAFFIC_MS: u32 = 10_000;
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TrafficSummary {
+    pub recent: usize,
+    pub quiet: usize,
+    pub transitioning: usize,
+    pub unavailable: usize,
+}
+impl TrafficSummary {
+    fn add(&mut self, row: &TcpConnection) {
+        if row.state != 1 {
+            self.transitioning += 1;
+        } else if let Some(traffic) = &row.traffic {
+            if traffic
+                .last_data_ago_ms
+                .is_some_and(|ms| ms < RECENT_TRAFFIC_MS)
+            {
+                self.recent += 1;
+            } else {
+                self.quiet += 1;
+            }
+        } else {
+            self.unavailable += 1;
+        }
+    }
+}
+
+/// A bounded catalog from configuration on disk, never per-connection attribution.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct NginxContext {
+    pub sites: Vec<NginxSite>,
+    pub files_read: usize,
+    pub partial: bool,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NginxSite {
+    pub source: String,
+    pub names: Vec<String>,
+    pub tls: bool,
+    pub backends: Vec<String>,
+}
 
 pub fn canonical(ip: IpAddr) -> IpAddr {
     match ip {
@@ -22,8 +64,38 @@ pub struct TcpService {
     pub programs: Vec<String>,
     pub connections: usize,
     pub clients: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub traffic: Option<TrafficSummary>,
 }
 impl TcpService {
+    pub fn is_nginx(&self) -> bool {
+        self.programs.iter().any(|name| name == "nginx")
+    }
+    pub fn purpose(&self) -> &'static str {
+        if self.is_nginx() {
+            "Web y proxy inverso"
+        } else if self
+            .programs
+            .iter()
+            .any(|n| matches!(n.as_str(), "sshd" | "sshd-session"))
+        {
+            "Administración remota"
+        } else if self
+            .programs
+            .iter()
+            .any(|n| matches!(n.as_str(), "postgres" | "mysqld" | "mariadbd" | "mongod"))
+        {
+            "Base de datos"
+        } else if self
+            .programs
+            .iter()
+            .any(|n| matches!(n.as_str(), "redis-server" | "memcached"))
+        {
+            "Almacenamiento en memoria"
+        } else {
+            "Servicio TCP · propósito sin identificar"
+        }
+    }
     pub fn local_only(&self) -> bool {
         !self.addresses.is_empty()
             && self
@@ -38,6 +110,8 @@ impl TcpService {
             .any(|n| matches!(n.as_str(), "sshd" | "sshd-session"))
         {
             "SSH".into()
+        } else if self.is_nginx() {
+            "Nginx".into()
         } else if self.programs.is_empty() {
             "Servicio TCP".into()
         } else {
@@ -78,6 +152,7 @@ impl ServiceOverview {
                     programs: vec![],
                     connections: 0,
                     clients: 0,
+                    traffic: Some(TrafficSummary::default()),
                 });
             if !service.addresses.contains(&row.key.local) {
                 service.addresses.push(row.key.local);
@@ -93,6 +168,7 @@ impl ServiceOverview {
                 .filter(|s| s.accepts(row))
             {
                 service.connections += 1;
+                service.traffic.as_mut().unwrap().add(row);
                 clients
                     .entry(service.port)
                     .or_default()
@@ -168,6 +244,41 @@ pub fn prioritize(rows: &mut [TcpConnection], overview: &ServiceOverview) {
 mod tests {
     use super::*;
     use crate::connections::{ProcessInfo, SNAPSHOT_LIMIT, SocketKey};
+    #[test]
+    fn traffic_counts_follow_payload_age_boundary_and_keep_unknown_separate() {
+        let mut rows = vec![row("0.0.0.0:443", "0.0.0.0:0", 10)];
+        for age in [Some(0), Some(9999), Some(10000), Some(10001), None] {
+            let mut r = row("192.0.2.1:443", "198.51.100.1:45000", 1);
+            r.traffic = Some(crate::connections::TcpTraffic {
+                last_data_ago_ms: age,
+            });
+            rows.push(r);
+        }
+        rows.push(row("192.0.2.1:443", "198.51.100.2:45000", 1));
+        rows.push(row("192.0.2.1:443", "198.51.100.3:45000", 8));
+        let overview = ServiceOverview::from_rows(&rows);
+        let service = overview.service(443).unwrap();
+        assert_eq!(service.connections, 7);
+        assert_eq!(
+            service.traffic,
+            Some(TrafficSummary {
+                recent: 2,
+                quiet: 3,
+                transitioning: 1,
+                unavailable: 1
+            })
+        );
+        assert_eq!(
+            service.purpose(),
+            "Servicio TCP · propósito sin identificar"
+        );
+        let mut service = service.clone();
+        service.programs = vec!["nginx".into()];
+        assert_eq!(service.name(), "Nginx");
+        assert_eq!(service.purpose(), "Web y proxy inverso");
+        service.programs = vec!["not-nginx".into()];
+        assert!(!service.is_nginx());
+    }
     fn row(local: &str, remote: &str, state: u8) -> TcpConnection {
         TcpConnection {
             key: SocketKey {
@@ -182,6 +293,7 @@ mod tests {
             user: "root".into(),
             processes: vec![],
             protected: false,
+            traffic: None,
         }
     }
     #[test]

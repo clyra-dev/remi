@@ -80,6 +80,9 @@ mod linux {
             user: uid.to_string(),
             processes: vec![],
             protected: false,
+            traffic: (bytes[1] != 10)
+                .then(|| crate::tcp_info::traffic(&bytes[72..]))
+                .flatten(),
         })
     }
 
@@ -93,6 +96,9 @@ mod linux {
         let req = &mut bytes[16..];
         req[0] = family;
         req[1] = libc::IPPROTO_TCP as u8;
+        if kind == QUERY {
+            req[2] = 1 << (2 - 1);
+        } // INET_DIAG_INFO
         // TIME_WAIT and CLOSED are not live connections and have no actionable process.
         req[4..8].copy_from_slice(&(!(1u32 << 6 | 1 << 7)).to_ne_bytes());
         req[48..56].fill(0xff);
@@ -365,6 +371,19 @@ mod linux {
         rows.truncate(SNAPSHOT_LIMIT);
         let incomplete = describe_processes(&mut rows);
         overview.enrich(&rows);
+        let nginx = port.and_then(|p| {
+            overview
+                .service(p)
+                .filter(|s| s.is_nginx())
+                .map(|_| crate::nginx::inspect(std::path::Path::new("/etc/nginx"), p))
+        });
+        tracing::debug!(
+            action = "tcp_recognition_snapshot",
+            port,
+            total,
+            traffic_available = rows.iter().filter(|r| r.traffic.is_some()).count(),
+            nginx = nginx.is_some()
+        );
         if let Some(port) = port {
             rows.retain(|r| r.key.local.port() == port);
         }
@@ -401,6 +420,7 @@ mod linux {
             limitation: (!limitations.is_empty()).then(|| limitations.join(". ")),
             overview: Some(overview),
             port,
+            nginx,
         })
     }
 
@@ -447,6 +467,53 @@ mod linux {
         fn malformed_diagnostics_are_rejected() {
             assert!(parse_row(&[0; 71]).is_err());
             assert!(parse_row(&[0; 72]).is_err());
+        }
+
+        #[test]
+        fn kernel_payload_recency_moves_from_unused_to_quiet_and_back_to_recent() {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+            let (mut server, _) = listener.accept().unwrap();
+            server
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let recency = || {
+                exchange(QUERY, 2, None)
+                    .unwrap()
+                    .into_iter()
+                    .find(|r| {
+                        r.key.local == server.local_addr().unwrap()
+                            && r.key.remote == client.local_addr().unwrap()
+                    })
+                    .unwrap()
+                    .traffic
+                    .expect("The request must enable TCP_INFO")
+            };
+            assert_eq!(recency().last_data_ago_ms, None);
+            // Capture addresses before mutably borrowing the streams.
+            let local = server.local_addr().unwrap();
+            let remote = client.local_addr().unwrap();
+            let age = || {
+                exchange(QUERY, 2, None)
+                    .unwrap()
+                    .into_iter()
+                    .find(|r| r.key.local == local && r.key.remote == remote)
+                    .unwrap()
+                    .traffic
+                    .unwrap()
+                    .last_data_ago_ms
+                    .unwrap()
+            };
+            client.write_all(b"hello").unwrap();
+            server.read_exact(&mut [0; 5]).unwrap();
+            let first = age();
+            assert!(first < 2000);
+            std::thread::sleep(Duration::from_millis(150));
+            let quiet = age();
+            assert!(quiet >= first + 100);
+            client.write_all(b"again").unwrap();
+            server.read_exact(&mut [0; 5]).unwrap();
+            assert!(age() < quiet, "New payload must reset the age");
         }
 
         #[test]

@@ -77,6 +77,13 @@ pub struct ProcessInfo {
     pub name: String,
 }
 
+/// Kernel TCP payload recency at capture time; neither HTTP activity nor client identity.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TcpTraffic {
+    /// None means TCP_INFO reports zero data segments in both directions.
+    pub last_data_ago_ms: Option<u32>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TcpConnection {
     pub key: SocketKey,
@@ -85,6 +92,8 @@ pub struct TcpConnection {
     pub user: String,
     pub processes: Vec<ProcessInfo>,
     pub protected: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub traffic: Option<TcpTraffic>,
 }
 impl TcpConnection {
     pub fn state_label(&self) -> &'static str {
@@ -119,6 +128,8 @@ pub struct ConnectionsSnapshot {
     /// None is the server-wide technical sample; Some limits detail to one local port.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub port: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nginx: Option<crate::services::NginxContext>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -154,6 +165,22 @@ pub enum ControlResult {
 mod tests {
     use super::*;
     #[test]
+    fn pre_recognition_snapshots_remain_readable_without_inventing_metadata() {
+        let input = r#"{"captured_at":"2026-01-01T00:00:00Z","hostname":"test","connections":[{"key":{"local":"127.0.0.1:22","remote":"127.0.0.1:40000","interface":0,"cookie":[1,2],"inode":3},"state":1,"uid":0,"user":"root","processes":[],"protected":true}],"total":1,"can_close":false,"limitation":null,"port":22,"overview":{"services":[{"port":22,"addresses":["0.0.0.0:22"],"programs":["sshd"],"connections":1,"clients":1}],"total_services":1,"connections":1,"other_connections":0}}"#;
+        let snapshot: ConnectionsSnapshot = serde_json::from_str(input).unwrap();
+        assert!(snapshot.nginx.is_none());
+        assert!(snapshot.connections[0].traffic.is_none());
+        assert!(
+            snapshot
+                .overview
+                .unwrap()
+                .service(22)
+                .unwrap()
+                .traffic
+                .is_none()
+        );
+    }
+    #[test]
     fn protects_observer_and_loopback_reverse_with_mapped_ipv4() {
         let observer = Observer::from_ssh_connection("192.0.2.1 54321 192.0.2.2 22").unwrap();
         let mut key = SocketKey {
@@ -185,6 +212,7 @@ mod tests {
             user: "test".into(),
             processes: vec![],
             protected: false,
+            traffic: None,
         };
         assert!(row.closable());
         row.state = 10;
