@@ -144,7 +144,12 @@ pub fn remember(path: &Path, host: &str, port: u16, key: &PublicKey) -> Result<(
         format!("[{host}]:{port}")
     };
     contents.push_str(&format!("{endpoint} {}\n", key.to_openssh()?));
-    remi_core::atomic_write(path, contents.as_bytes())
+    remi_core::atomic_write(path, contents.as_bytes()).with_context(|| {
+        format!(
+            "No se pudo guardar la identidad del servidor en {}; revisa la ruta y sus permisos",
+            path.display()
+        )
+    })
 }
 
 #[cfg(test)]
@@ -223,8 +228,21 @@ mod tests {
         let path = dir.path().join("known_hosts");
         let original = format!("host {B}\n");
         fs::write(&path, &original).unwrap();
-        assert!(remember(&path, "host", 22, &key()).is_err());
+        let error = remember(&path, "host", 22, &key()).unwrap_err().to_string();
+        assert!(error.contains("no coincide"), "{error}");
         assert_eq!(fs::read_to_string(path).unwrap(), original);
+    }
+    #[test]
+    fn failed_write_names_the_known_hosts_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o500)).unwrap();
+        let path = dir.path().join("known_hosts");
+        let result = remember(&path, "host", 22, &key());
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains(&path.display().to_string()), "{error}");
+        assert!(error.contains("permisos"), "{error}");
     }
     #[test]
     fn explicit_trust_is_durable_private_and_idempotent() {

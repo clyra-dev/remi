@@ -421,6 +421,8 @@ async fn connection_control(channel: russh::Channel<client::Msg>, updates: &Upda
 }
 
 pub fn trust_host(settings: &Settings, host: &str, port: u16, openssh_key: &str) -> Result<()> {
+    // The form stays editable while the fingerprint card is shown.
+    settings.validate()?;
     if host != settings.host || port.to_string() != settings.port {
         bail!("La configuración cambió; vuelve a verificar el servidor");
     }
@@ -433,6 +435,32 @@ pub fn trust_host(settings: &Settings, host: &str, port: u16, openssh_key: &str)
 #[cfg(test)]
 mod tests {
     use super::*;
+    const KEY: &str =
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFBBFy4/1MtRbkgvfdaPX8Z5pYHaxGEhdtB7stG3UAvi";
+    #[test]
+    fn trust_validates_settings_before_writing_known_hosts() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut settings = Settings {
+            host: "127.0.0.1".into(),
+            port: "2222".into(),
+            user: "reader".into(),
+            known_hosts: "remi-trust-test/known_hosts".into(),
+            ..Default::default()
+        };
+        let error = trust_host(&settings, "127.0.0.1", 2222, KEY)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("debe empezar"), "{error}");
+        assert!(!std::path::Path::new("remi-trust-test").exists());
+        let path = dir.path().join("known_hosts");
+        settings.known_hosts = path.to_string_lossy().into();
+        trust_host(&settings, "127.0.0.1", 2222, KEY).unwrap();
+        assert!(
+            std::fs::read_to_string(path)
+                .unwrap()
+                .starts_with("[127.0.0.1]:2222 ")
+        );
+    }
     #[tokio::test]
     #[ignore = "Requires the disposable Remi SSH acceptance server and explicit REMI_QA_* variables"]
     async fn local_ssh_authentication_and_protocol() {
