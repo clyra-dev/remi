@@ -243,6 +243,12 @@ mod tests {
         let error = result.unwrap_err().to_string();
         assert!(error.contains(&path.display().to_string()), "{error}");
         assert!(error.contains("permisos"), "{error}");
+        assert!(
+            !path.exists(),
+            "A denied write must not leave a partial record"
+        );
+        remember(&path, "host", 22, &key()).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), format!("host {A}\n"));
     }
     #[test]
     fn explicit_trust_is_durable_private_and_idempotent() {

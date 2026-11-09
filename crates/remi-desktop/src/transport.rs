@@ -437,28 +437,123 @@ mod tests {
     use super::*;
     const KEY: &str =
         "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFBBFy4/1MtRbkgvfdaPX8Z5pYHaxGEhdtB7stG3UAvi";
-    #[test]
-    fn trust_validates_settings_before_writing_known_hosts() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut settings = Settings {
+    const OTHER_KEY: &str =
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIB7rtBseAQPXJl3HIfH05NvOj3cys47Lq+N8bUbYYINj";
+
+    fn trust_settings(path: &std::path::Path) -> Settings {
+        Settings {
             host: "127.0.0.1".into(),
             port: "2222".into(),
             user: "reader".into(),
-            known_hosts: "remi-trust-test/known_hosts".into(),
+            known_hosts: path.to_str().unwrap().into(),
             ..Default::default()
-        };
+        }
+    }
+    #[test]
+    fn trust_validates_settings_before_writing_known_hosts() {
+        let cwd = std::env::current_dir().unwrap();
+        let dir = tempfile::tempdir_in(&cwd).unwrap();
+        let path = dir.path().join("pending/known_hosts");
+        // Each test owns its prospective relative destination, including when a fault writes it.
+        let mut settings = trust_settings(path.strip_prefix(&cwd).unwrap());
         let error = trust_host(&settings, "127.0.0.1", 2222, KEY)
             .unwrap_err()
             .to_string();
         assert!(error.contains("debe empezar"), "{error}");
-        assert!(!std::path::Path::new("remi-trust-test").exists());
-        let path = dir.path().join("known_hosts");
+        assert!(!path.exists());
+        assert!(!path.parent().unwrap().exists());
         settings.known_hosts = path.to_string_lossy().into();
         trust_host(&settings, "127.0.0.1", 2222, KEY).unwrap();
         assert!(
             std::fs::read_to_string(path)
                 .unwrap()
                 .starts_with("[127.0.0.1]:2222 ")
+        );
+    }
+    #[test]
+    fn trust_rejects_changed_host_and_port_independently_without_writing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("known_hosts");
+        let settings = trust_settings(&path);
+        assert!(settings.validate().is_ok());
+        for (host, port) in [("other.example.test", 2222), ("127.0.0.1", 22)] {
+            let error = trust_host(&settings, host, port, KEY)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains("configuración cambió"),
+                "{host}:{port}: {error}"
+            );
+            assert!(
+                !path.exists(),
+                "A stale fingerprint must not create a trust record"
+            );
+        }
+        trust_host(&settings, "127.0.0.1", 2222, KEY).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            format!("[127.0.0.1]:2222 {KEY}\n")
+        );
+    }
+
+    #[test]
+    fn trust_uses_the_trimmed_destination_and_preserves_existing_records() {
+        let dir = tempfile::Builder::new()
+            .prefix("remi trust ")
+            .tempdir()
+            .unwrap();
+        let path = dir.path().join("known hosts");
+        let original = format!("# An existing server\nexisting.example.test {OTHER_KEY}\n");
+        std::fs::write(&path, &original).unwrap();
+        let mut settings = trust_settings(&path);
+        settings.known_hosts = format!(" \t{} \n", path.display());
+        trust_host(&settings, "127.0.0.1", 2222, KEY).unwrap();
+        let expected = format!("{original}[127.0.0.1]:2222 {KEY}\n");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), expected);
+        trust_host(&settings, "127.0.0.1", 2222, KEY).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            expected,
+            "Repeated approval is idempotent"
+        );
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn trust_preserves_revoked_changed_and_malformed_identity_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("known_hosts");
+        let settings = trust_settings(&path);
+        assert!(settings.validate().is_ok());
+        for (contents, reason) in [
+            (
+                format!("[127.0.0.1]:2222 {KEY}\n@revoked [127.0.0.1]:2222 {KEY}\n"),
+                "revocada",
+            ),
+            (format!("[127.0.0.1]:2222 {OTHER_KEY}\n"), "no coincide"),
+            ("[127.0.0.1]:2222 not-a-key\n".into(), "entrada inválida"),
+        ] {
+            std::fs::write(&path, &contents).unwrap();
+            let error = trust_host(&settings, "127.0.0.1", 2222, KEY)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(reason), "{error}");
+            assert!(
+                !error.contains("No se pudo guardar"),
+                "Trust rejection must keep its own diagnostic"
+            );
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), contents);
+        }
+        std::fs::write(&path, "# Verified empty trust store\n").unwrap();
+        assert!(trust_host(&settings, "127.0.0.1", 2222, "invalid public key").is_err());
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "# Verified empty trust store\n"
+        );
+        trust_host(&settings, "127.0.0.1", 2222, KEY).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            format!("# Verified empty trust store\n[127.0.0.1]:2222 {KEY}\n")
         );
     }
     #[tokio::test]

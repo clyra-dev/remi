@@ -232,6 +232,94 @@ mod tests {
         s.key_path = key.path().to_string_lossy().into();
         assert!(s.validate().is_ok());
     }
+    #[test]
+    fn existing_relative_private_key_is_rejected_independently_of_file_presence() {
+        // Avoid changing the process-wide working directory or environment during parallel tests.
+        let cwd = std::env::current_dir().unwrap();
+        let key = tempfile::NamedTempFile::new_in(&cwd).unwrap();
+        let mut settings = Settings {
+            host: "127.0.0.1".into(),
+            user: "reader".into(),
+            use_agent: false,
+            key_path: key.path().to_str().unwrap().into(),
+            known_hosts: cwd.join("unused_known_hosts").to_str().unwrap().into(),
+            ..Default::default()
+        };
+        assert!(
+            settings.validate().is_ok(),
+            "Absolute, existing key is the valid control"
+        );
+        let relative = key.path().strip_prefix(&cwd).unwrap();
+        assert!(!relative.is_absolute());
+        assert!(
+            relative.is_file(),
+            "A missing file must not mask the path validation"
+        );
+        settings.key_path = relative.to_str().unwrap().into();
+        let error = settings.validate().unwrap_err().to_string();
+        assert!(
+            error.contains("llave SSH") && error.contains("debe empezar"),
+            "{error}"
+        );
+        settings.key_path = key.path().to_str().unwrap().into();
+        assert!(
+            settings.validate().is_ok(),
+            "Correcting only the path recovers validation"
+        );
+    }
+
+    #[test]
+    fn agent_authentication_ignores_unused_key_paths_but_still_validates_known_hosts() {
+        let dir = tempfile::tempdir().unwrap();
+        let valid_hosts = dir.path().join("known_hosts");
+        let mut settings = Settings {
+            host: "127.0.0.1".into(),
+            user: "reader".into(),
+            use_agent: true,
+            known_hosts: valid_hosts.to_str().unwrap().into(),
+            ..Default::default()
+        };
+        for unused in ["", "id_missing", "~unsupported", "/missing/remi-key"] {
+            settings.key_path = unused.into();
+            assert!(settings.validate().is_ok(), "Unused key path: {unused:?}");
+        }
+        settings.known_hosts = "relative_known_hosts".into();
+        let error = settings.validate().unwrap_err().to_string();
+        assert!(error.contains("known_hosts"), "{error}");
+        settings.known_hosts = valid_hosts.to_str().unwrap().into();
+        assert!(settings.validate().is_ok());
+    }
+
+    #[test]
+    fn padded_paths_preserve_internal_spaces_and_allow_a_new_known_hosts_file() {
+        let dir = tempfile::Builder::new()
+            .prefix("remi paths ")
+            .tempdir()
+            .unwrap();
+        let key = dir.path().join("deployment key");
+        std::fs::write(
+            &key,
+            b"File-presence fixture; not an SSH authentication test",
+        )
+        .unwrap();
+        let hosts = dir.path().join("trust store/known_hosts");
+        assert!(!hosts.exists());
+        let settings = Settings {
+            host: "127.0.0.1".into(),
+            user: "reader".into(),
+            use_agent: false,
+            key_path: format!(" \t{} \n", key.display()),
+            known_hosts: format!("\t {} \n", hosts.display()),
+            ..Default::default()
+        };
+        assert_eq!(expand_path(&settings.key_path), key);
+        assert_eq!(expand_path(&settings.known_hosts), hosts);
+        assert!(settings.validate().is_ok());
+        assert!(
+            !hosts.exists(),
+            "Validation alone must not create the trust file"
+        );
+    }
     fn entry(id: &str) -> HistoryEntry {
         HistoryEntry {
             id: id.into(),

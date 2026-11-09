@@ -130,6 +130,8 @@ Contributions target `staging`. Run formatting, Clippy, tests and applicable vis
 
 ## Validation of this MVP
 
+After merging [PR #1](https://github.com/clyra-dev/remi/pull/1), six additional desktop unit tests and two strengthened tests cover SSH path validation and trust-file preservation. The macOS workspace has **66 passing tests**, with one opt-in SSH test ignored; four manually introduced production faults were detected and reverted. See [SSH path and trust evidence](tests/SSH_PATHS.md) for exact commands, failures, recovery and limits.
+
 The 2026-11-09 [mutation audit](tests/MUTATIONS.md) deliberately introduced 32 compiling behavioral faults: the original tests detected 18; strengthened tests detect all 32 in this curated sample. Two behavior-preserving controls still pass. Reproduce the native audit with `cargo xtask mutate`, or the Linux socket cases with `cargo xtask mutate --linux` inside a disposable Linux environment.
 
 Service recognition 0.4.0 was checked on 2026-11-09 UTC with 57 passing macOS tests, 42 passing Linux tests, four manually introduced behavioral faults detected by unchanged tests, and visible acceptance against actual Debian testing; see [recognition evidence](tests/RECOGNITION.md) for commands, observed failures, restoration, UI checks and limits.
