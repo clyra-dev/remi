@@ -196,6 +196,10 @@ mod tests {
         row.key.cookie = [u32::MAX; 2];
         assert!(!row.closable());
         row.key.cookie = [1, 0];
+        row.key.inode = 0;
+        assert!(!row.closable(), "A missing inode cannot identify a socket");
+        row.key.inode = 5;
+        assert!(row.closable(), "Other identity fields remain valid");
         row.key.remote = "0.0.0.0:0".parse().unwrap();
         assert!(!row.closable());
     }

@@ -390,6 +390,28 @@ mod tests {
         assert!(read_line(&mut reader).await.unwrap().is_none());
     }
     #[tokio::test]
+    async fn protocol_limits_apply_to_complete_frames_at_fragment_boundaries() {
+        for limit in [4, 31, MAX_FRAME_BYTES] {
+            for length in [limit - 1, limit, limit + 1] {
+                let mut bytes = vec![b'a'; length - 1];
+                bytes.push(b'\n');
+                for capacity in [1, 7, limit + 1] {
+                    let mut reader =
+                        tokio::io::BufReader::with_capacity(capacity, bytes.as_slice());
+                    let result = read_line_bounded(&mut reader, limit).await;
+                    if length <= limit {
+                        assert_eq!(result.unwrap().unwrap().as_bytes(), bytes.as_slice());
+                    } else {
+                        assert!(
+                            result.is_err(),
+                            "Oversized frame: length={length}, limit={limit}, chunk={capacity}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+    #[tokio::test]
     async fn protocol_reader_rejects_partial_oversized_and_invalid_utf8_frames() {
         for bytes in [
             b"partial".to_vec(),

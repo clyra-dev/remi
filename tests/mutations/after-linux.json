@@ -1,0 +1,67 @@
+[
+  {
+    "after": "let _ = port;",
+    "before": "rows.retain(|r| r.key.local.port() == port);",
+    "description": "Leak unrelated listeners into a scoped query",
+    "failed_tests": [
+      "test busy_unrelated_service_cannot_hide_full_counts_or_a_scoped_connection ... FAILED",
+      "test control_protocol_lists_real_sockets_and_refuses_close_without_observer ... FAILED"
+    ],
+    "file": "crates/remi-agent/src/sockets.rs",
+    "id": "L01",
+    "outcome": "detected",
+    "package": "remi-agent",
+    "target": [
+      "--test",
+      "connections"
+    ]
+  },
+  {
+    "after": "row.protected = false;",
+    "before": "row.protected = observer.is_some_and(|o| o.protects(&row.key));",
+    "description": "Omit observer protection from Linux snapshots",
+    "failed_tests": [
+      "test sockets::linux::tests::capability_probe_preserves_existing_connections ... FAILED"
+    ],
+    "file": "crates/remi-agent/src/sockets.rs",
+    "id": "L02",
+    "outcome": "detected",
+    "package": "remi-agent",
+    "target": [
+      "--bin",
+      "remi-agent"
+    ]
+  },
+  {
+    "after": "rows.truncate(SNAPSHOT_LIMIT);\n        overview = remi_core::services::ServiceOverview::from_rows(&rows);",
+    "before": "rows.truncate(SNAPSHOT_LIMIT);",
+    "description": "Compute service counts after truncating sockets",
+    "failed_tests": [
+      "test busy_unrelated_service_cannot_hide_full_counts_or_a_scoped_connection ... FAILED"
+    ],
+    "file": "crates/remi-agent/src/sockets.rs",
+    "id": "L03",
+    "outcome": "detected",
+    "package": "remi-agent",
+    "target": [
+      "--test",
+      "connections"
+    ]
+  },
+  {
+    "after": "let _ = port;",
+    "before": "rows.retain(|r| r.state == 10 || r.key.local.port() == port);",
+    "description": "Apply the per-port filter after the sample limit",
+    "failed_tests": [
+      "test busy_unrelated_service_cannot_hide_full_counts_or_a_scoped_connection ... FAILED"
+    ],
+    "file": "crates/remi-agent/src/sockets.rs",
+    "id": "L04",
+    "outcome": "detected",
+    "package": "remi-agent",
+    "target": [
+      "--test",
+      "connections"
+    ]
+  }
+]

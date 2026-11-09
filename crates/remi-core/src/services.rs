@@ -212,6 +212,41 @@ mod tests {
         assert_eq!((overview.connections, overview.other_connections), (3, 1));
     }
     #[test]
+    fn mixed_bindings_remain_visible_and_summary_bounds_preserve_full_counts() {
+        for port in [22, 443, 53000] {
+            let rows = [
+                row(&format!("127.0.0.1:{port}"), "0.0.0.0:0", 10),
+                row(&format!("192.0.2.1:{port}"), "0.0.0.0:0", 10),
+            ];
+            let overview = ServiceOverview::from_rows(&rows);
+            assert!(!overview.service(port).unwrap().local_only());
+            let only_loopback = ServiceOverview::from_rows(&rows[..1]);
+            assert!(only_loopback.service(port).unwrap().local_only());
+        }
+        for count in [0, 1, SERVICE_LIMIT - 1, SERVICE_LIMIT, SERVICE_LIMIT + 17] {
+            let mut rows = Vec::new();
+            for i in 0..count {
+                let port = 10000 + i;
+                rows.push(row(&format!("0.0.0.0:{port}"), "0.0.0.0:0", 10));
+                rows.push(row(&format!("192.0.2.1:{port}"), "198.51.100.1:45000", 1));
+            }
+            let overview = ServiceOverview::from_rows(&rows);
+            assert_eq!(overview.total_services, count);
+            assert_eq!(overview.services.len(), count.min(SERVICE_LIMIT));
+            assert_eq!(
+                overview.connections, count,
+                "Counts include omitted services"
+            );
+            assert_eq!(overview.other_connections, 0);
+            assert!(
+                overview
+                    .services
+                    .iter()
+                    .all(|s| s.connections == 1 && s.clients == 1)
+            );
+        }
+    }
+    #[test]
     fn full_counts_and_listeners_survive_a_large_background_sample() {
         let mut rows = (0..1500)
             .map(|i| row(&format!("192.0.2.1:{}", 30000 + i), "198.51.100.1:443", 1))

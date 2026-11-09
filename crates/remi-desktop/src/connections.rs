@@ -749,23 +749,192 @@ mod tests {
     }
     #[test]
     fn scope_mismatch_and_wrong_request_ids_preserve_cache_without_enabling_actions() {
-        for wrong_id in [false, true] {
+        // Each guard must reject on its own; two simultaneous faults can mask a missing guard.
+        for (wrong_id, wrong_port) in [(true, false), (false, true), (true, true), (false, false)] {
             let mut page = Connections::default();
             let (tx, mut rx) = tokio::sync::mpsc::channel(2);
             page.ready(tx);
             page.snapshot = Some(snapshot());
+            page.scoped_reads = true;
+            page.change_view(View::Port(22));
             page.request(ControlAction::ListService { port: 22 });
             let request = rx.try_recv().unwrap();
+            let mut response = snapshot();
+            response.port = Some(if wrong_port { 443 } else { 22 });
+            response.overview = Some(ServiceOverview::from_rows(&response.connections));
             page.reply(ControlReply {
                 id: if wrong_id { request.id + 1 } else { request.id },
-                result: ControlResult::Snapshot {
-                    snapshot: snapshot(),
-                },
+                result: ControlResult::Snapshot { snapshot: response },
             });
-            assert!(page.sender.is_none());
-            assert!(page.snapshot.is_some());
-            assert!(!page.can_close(true));
+            if wrong_id || wrong_port {
+                assert!(page.sender.is_none());
+                assert_eq!(
+                    page.snapshot.as_ref().unwrap().port,
+                    None,
+                    "Cached view is unchanged"
+                );
+                assert!(!page.can_close(true));
+            } else {
+                assert_eq!(page.snapshot.as_ref().unwrap().port, Some(22));
+                assert!(page.can_close(true), "A matching reply must enable actions");
+            }
         }
+    }
+    fn loaded_page(
+        snapshot: ConnectionsSnapshot,
+    ) -> (Connections, tokio::sync::mpsc::Receiver<ControlRequest>) {
+        let mut page = Connections::default();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        page.ready(tx);
+        page.request(ControlAction::List);
+        let request = rx.try_recv().unwrap();
+        page.reply(ControlReply {
+            id: request.id,
+            result: ControlResult::Snapshot { snapshot },
+        });
+        (page, rx)
+    }
+    #[test]
+    fn close_requires_connected_transport_and_a_successful_read_after_an_error() {
+        let (mut page, mut rx) = loaded_page(snapshot());
+        assert!(page.can_close(true));
+        assert!(
+            !page.can_close(false),
+            "Transport state overrides a previously valid snapshot"
+        );
+        page.request(ControlAction::List);
+        assert!(
+            !page.can_close(true),
+            "A pending read disables destructive actions"
+        );
+        let request = rx.try_recv().unwrap();
+        page.reply(ControlReply {
+            id: request.id,
+            result: ControlResult::Error {
+                message: "Read failed".into(),
+            },
+        });
+        assert!(
+            !page.can_close(true),
+            "Cached rows are not authorization after a failed query"
+        );
+        assert!(page.snapshot.is_some());
+        page.request(ControlAction::List);
+        let request = rx.try_recv().unwrap();
+        page.reply(ControlReply {
+            id: request.id,
+            result: ControlResult::Snapshot {
+                snapshot: snapshot(),
+            },
+        });
+        assert!(
+            page.can_close(true),
+            "A fresh successful read recovers actions"
+        );
+        let mut read_only = snapshot();
+        read_only.can_close = false;
+        let (read_only, _rx) = loaded_page(read_only);
+        assert!(
+            !read_only.can_close(true),
+            "The server can independently forbid closure"
+        );
+    }
+    #[test]
+    fn close_acknowledgment_must_match_the_requested_socket() {
+        let mut data = snapshot();
+        let expected = data.connections[0].key.clone();
+        let mut other = data.connections[0].clone();
+        other.key.remote.set_port(45001);
+        other.key.cookie = [9, 10];
+        other.key.inode += 1;
+        let wrong = other.key.clone();
+        data.connections.push(other);
+        data.total = 2;
+        let (mut page, mut rx) = loaded_page(data);
+        page.request(ControlAction::Close {
+            key: expected.clone(),
+        });
+        let request = rx.try_recv().unwrap();
+        page.reply(ControlReply {
+            id: request.id,
+            result: ControlResult::Closed { key: wrong.clone() },
+        });
+        let cached = page.snapshot.as_ref().unwrap();
+        assert_eq!(cached.total, 2);
+        assert!(cached.connections.iter().any(|r| r.key == expected));
+        assert!(cached.connections.iter().any(|r| r.key == wrong));
+        assert!(!page.can_close(true));
+        assert!(page.error.is_some());
+        assert!(
+            page.notice.is_none(),
+            "Do not report another socket's close as success"
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "An invalid acknowledgment cannot start another operation"
+        );
+    }
+    #[test]
+    fn service_visibility_and_search_follow_the_operators_choices() {
+        let mut rows = Vec::new();
+        for (address, name) in [
+            ("127.0.0.1:9000", "metrics"),
+            ("0.0.0.0:443", "nginx"),
+            ("127.0.0.1:8080", "api"),
+            ("192.0.2.1:8080", "api"),
+        ] {
+            let mut listener = snapshot().connections.remove(0);
+            listener.key.local = address.parse().unwrap();
+            listener.state = 10;
+            listener.processes = vec![ProcessInfo {
+                pid: 42,
+                name: name.into(),
+            }];
+            rows.push(listener);
+        }
+        let mut page = Connections {
+            overview: Some(ServiceOverview::from_rows(&rows)),
+            ..Default::default()
+        };
+        let ports = |page: &Connections| {
+            page.services()
+                .into_iter()
+                .map(|s| s.port)
+                .collect::<std::collections::BTreeSet<_>>()
+        };
+        assert_eq!(ports(&page), [443, 8080].into());
+        page.internal = true;
+        assert_eq!(ports(&page), [443, 8080, 9000].into());
+        page.filter = "METRICS".into();
+        assert_eq!(ports(&page), [9000].into());
+        page.internal = false;
+        assert!(page.services().is_empty());
+        page.filter = "NGINX".into();
+        assert_eq!(ports(&page), [443].into());
+    }
+    #[test]
+    fn detail_order_is_independent_of_tcp_state_and_input_enumeration() {
+        let mut data = snapshot();
+        for port in [50000, 42000, 47000] {
+            let mut row = data.connections[0].clone();
+            row.key.remote.set_port(port);
+            row.key.cookie[0] = u32::from(port);
+            data.connections.push(row);
+        }
+        let (mut page, _rx) = loaded_page(data);
+        let identities =
+            |page: &Connections| page.rows().into_iter().map(|r| r.key).collect::<Vec<_>>();
+        let before = identities(&page);
+        let rows = &mut page.snapshot.as_mut().unwrap().connections;
+        rows.reverse();
+        for (row, state) in rows.iter_mut().zip([8, 1, 11, 2]) {
+            row.state = state;
+        }
+        assert_eq!(
+            identities(&page),
+            before,
+            "Changes in state and enumeration cannot shuffle identities"
+        );
     }
     #[test]
     fn refresh_and_search_preserve_selection_and_pagination_is_bounded() {

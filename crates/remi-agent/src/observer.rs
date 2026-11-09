@@ -157,6 +157,33 @@ mod tests {
     }
 
     #[test]
+    fn login_at_the_process_start_tick_is_valid_but_an_earlier_one_is_not() {
+        for (pid, started) in [(123, 0), (789, 1), (456, 10_000_000)] {
+            let observer = StreamObserver {
+                connection: Observer::from_ssh_connection("192.0.2.10 45000 192.0.2.20 22")
+                    .unwrap(),
+                boot_id: "0123456789abcdef0123456789abcdef".into(),
+                processes: vec![(pid, started)],
+            };
+            let mut login = event();
+            login.origin.as_mut().unwrap().pid = pid;
+            for timestamp in [started, started + 1] {
+                login.origin.as_mut().unwrap().monotonic_micros = timestamp;
+                assert!(
+                    observer.matches(&login),
+                    "Same-process login at tick {timestamp}"
+                );
+            }
+            if let Some(earlier) = started.checked_sub(1) {
+                login.origin.as_mut().unwrap().monotonic_micros = earlier;
+                assert!(
+                    !observer.matches(&login),
+                    "PID reuse must not hide an older login"
+                );
+            }
+        }
+    }
+    #[test]
     fn proc_ancestry_requires_sshd_and_reads_names_with_spaces_or_parentheses() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("sys/kernel/random")).unwrap();

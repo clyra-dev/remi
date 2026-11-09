@@ -9,6 +9,8 @@ use std::{
     process::Command,
 };
 
+mod mutation;
+
 #[derive(Parser)]
 struct Cli {
     #[command(subcommand)]
@@ -16,6 +18,17 @@ struct Cli {
 }
 #[derive(Subcommand)]
 enum Action {
+    /// Audit tests using compiling, one-at-a-time faults in an isolated source copy.
+    Mutate {
+        /// Run Linux socket cases (requires Linux, never contacts an SSH server).
+        #[arg(long)]
+        linux: bool,
+        /// Restrict the audit to comma-separated mutation IDs.
+        #[arg(long)]
+        only: Option<String>,
+        #[arg(long, default_value = "audit")]
+        label: String,
+    },
     /// Bundle a pre-built macOS executable as dist/Remi.app.
     Bundle {
         #[arg(long, default_value = "target/release/remi")]
@@ -42,6 +55,7 @@ enum Action {
 }
 fn main() -> Result<()> {
     match Cli::parse().action {
+        Action::Mutate { linux, only, label } => mutation::run(linux, only.as_deref(), &label),
         Action::Bundle { binary } => bundle(&binary),
         Action::Deb {
             arch,

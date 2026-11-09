@@ -1,0 +1,52 @@
+{
+  "base_commit": "e8332a7ee6ff516f04f92262af36a932927847b6",
+  "fault_count": 32,
+  "before_detected": 18,
+  "before_survived": 14,
+  "after_detected": 32,
+  "after_survived": 0,
+  "controls": [
+    "D06",
+    "E01"
+  ],
+  "same_production_mutations_in_both_rounds": true,
+  "production_sections_unchanged": true,
+  "application_source_sha256": {
+    "crates/remi-agent/src/main.rs": {
+      "before": "5ced23c99bb1a2cde1618d089c4b75f77e9bf2653bbeb956e8da932b028b8463",
+      "after": "5ced23c99bb1a2cde1618d089c4b75f77e9bf2653bbeb956e8da932b028b8463"
+    },
+    "crates/remi-agent/src/observer.rs": {
+      "before": "facde64dd5322676a489ba344e7af1355d7542d56a345864d2eb058ee1816c84",
+      "after": "061078bd31a81705653358f9f612248650f9e06ec8faa836aec7dde7fd35a988"
+    },
+    "crates/remi-agent/src/sockets.rs": {
+      "before": "bc541c6686cf3bd41f3a586e191e03f540420b70d84420e05a35209c3771183c",
+      "after": "bc541c6686cf3bd41f3a586e191e03f540420b70d84420e05a35209c3771183c"
+    },
+    "crates/remi-core/src/connections.rs": {
+      "before": "4f22a05b5fdb7ca5cd430685e97dcc4186e36fc71bee144126b965bddb32aba3",
+      "after": "79ee7b366a81ae8a9b6ddcf361009d8b0c2faad7888bb90832209088976ff1b7"
+    },
+    "crates/remi-core/src/lib.rs": {
+      "before": "ba93af665a1885444948a75336f6c3916bdfa8a7cffe092884afb995c44ca97c",
+      "after": "54b6ea214424f2c7a12e91b16622e577c3152d6fe1bba8ac53b3e838847f6bac"
+    },
+    "crates/remi-core/src/services.rs": {
+      "before": "66ac0b2f83ae1ad68430e9062ace5d2bbb80e64c119616fcbf704934c7e4a43d",
+      "after": "3d2d6f532e7c575bd74ff2a5b373bbac87c15bc113d0269dee9d5b873334aae6"
+    },
+    "crates/remi-desktop/src/connections.rs": {
+      "before": "bb6a58527f9062543c394c64bf9176500c82f4039608dd257be5352be79ed0a1",
+      "after": "05d5aa022fcd03d085c48a1d5aecfb5afba77ecefd3cdd53e088aa9d0010b5c6"
+    },
+    "crates/remi-desktop/src/host_keys.rs": {
+      "before": "4d3a2b16974828415939bddd8e914192ac9ceb53180250c77ab0707082a5ceef",
+      "after": "4d3a2b16974828415939bddd8e914192ac9ceb53180250c77ab0707082a5ceef"
+    },
+    "crates/remi-desktop/src/model.rs": {
+      "before": "e12804917a4070086d273ac9694aadd15c896da9e76dac995310f630177a6656",
+      "after": "e12804917a4070086d273ac9694aadd15c896da9e76dac995310f630177a6656"
+    }
+  }
+}

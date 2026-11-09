@@ -1,0 +1,442 @@
+[
+  {
+    "after": "self.mode == AlertMode::All || self.expected(address)",
+    "before": "self.mode == AlertMode::All || !self.expected(address)",
+    "description": "Invert allowlist alerts",
+    "failed_tests": [
+      "test tests::policies_handle_ipv4_ipv6_mapped_addresses_and_empty_lists ... FAILED"
+    ],
+    "file": "crates/remi-core/src/lib.rs",
+    "id": "C01",
+    "outcome": "detected",
+    "package": "remi-core",
+    "target": [
+      "--lib"
+    ]
+  },
+  {
+    "after": "|| false",
+    "before": "|| value.get(\"_UID\")?.as_str()? != \"0\"",
+    "description": "Accept non-root journal records",
+    "failed_tests": [
+      "test tests::parser_rejects_invalid_ports_versions_and_missing_trusted_fields ... FAILED",
+      "test tests::rejects_failed_logins_spoofed_journal_metadata_and_malformed_records ... FAILED"
+    ],
+    "file": "crates/remi-core/src/lib.rs",
+    "id": "C02",
+    "outcome": "detected",
+    "package": "remi-core",
+    "target": [
+      "--lib"
+    ]
+  },
+  {
+    "after": "fields[7].parse::<u16>().ok()?",
+    "before": "fields[7].parse::<u16>().ok().filter(|port| *port > 0)?",
+    "description": "Permit zero source ports",
+    "failed_tests": [
+      "test tests::parser_rejects_invalid_ports_versions_and_missing_trusted_fields ... FAILED"
+    ],
+    "file": "crates/remi-core/src/lib.rs",
+    "id": "C03",
+    "outcome": "detected",
+    "package": "remi-core",
+    "target": [
+      "--lib"
+    ]
+  },
+  {
+    "after": "|| false",
+    "before": "|| self.inode == 0",
+    "description": "Accept missing socket inodes",
+    "failed_tests": [],
+    "file": "crates/remi-core/src/connections.rs",
+    "id": "C04",
+    "outcome": "survived",
+    "package": "remi-core",
+    "target": [
+      "--lib"
+    ]
+  },
+  {
+    "after": "|| false",
+    "before": "|| self.cookie == [u32::MAX; 2]",
+    "description": "Accept missing kernel cookies",
+    "failed_tests": [
+      "test connections::tests::rejects_wildcards_missing_cookies_and_listener_closure ... FAILED"
+    ],
+    "file": "crates/remi-core/src/connections.rs",
+    "id": "C05",
+    "outcome": "detected",
+    "package": "remi-core",
+    "target": [
+      "--lib"
+    ]
+  },
+  {
+    "after": "&& true",
+    "before": "&& a.port() == b.port()",
+    "description": "Protect every session from the observer IP",
+    "failed_tests": [
+      "test connections::tests::protects_observer_and_loopback_reverse_with_mapped_ipv4 ... FAILED"
+    ],
+    "file": "crates/remi-core/src/connections.rs",
+    "id": "C06",
+    "outcome": "detected",
+    "package": "remi-core",
+    "target": [
+      "--lib"
+    ]
+  },
+  {
+    "after": "matches!(self.state, 1..=5 | 8 | 9 | 10 | 11)",
+    "before": "matches!(self.state, 1..=5 | 8 | 9 | 11)",
+    "description": "Allow closing listeners",
+    "failed_tests": [
+      "test connections::tests::rejects_wildcards_missing_cookies_and_listener_closure ... FAILED"
+    ],
+    "file": "crates/remi-core/src/connections.rs",
+    "id": "C07",
+    "outcome": "detected",
+    "package": "remi-core",
+    "target": [
+      "--lib"
+    ]
+  },
+  {
+    "after": "service.clients = service.connections;",
+    "before": "service.clients = clients.get(port).map_or(0, BTreeSet::len);",
+    "description": "Count sessions as distinct client IPs",
+    "failed_tests": [
+      "test services::tests::groups_dual_stack_ports_and_counts_clients_without_assuming_public_exposure ... FAILED"
+    ],
+    "file": "crates/remi-core/src/services.rs",
+    "id": "C08",
+    "outcome": "detected",
+    "package": "remi-core",
+    "target": [
+      "--lib"
+    ]
+  },
+  {
+    "after": "IpAddr::V6(v6) => IpAddr::V6(v6),",
+    "before": "IpAddr::V6(v6) => v6.to_ipv4_mapped().map(IpAddr::V4).unwrap_or(ip),",
+    "description": "Stop normalizing mapped IPv4 clients",
+    "failed_tests": [
+      "test services::tests::groups_dual_stack_ports_and_counts_clients_without_assuming_public_exposure ... FAILED"
+    ],
+    "file": "crates/remi-core/src/services.rs",
+    "id": "C09",
+    "outcome": "detected",
+    "package": "remi-core",
+    "target": [
+      "--lib"
+    ]
+  },
+  {
+    "after": "} else if row.state == 10 {\n            4",
+    "before": "} else if row.state == 10 {\n            1",
+    "description": "Prioritize background sockets over listeners",
+    "failed_tests": [
+      "test services::tests::full_counts_and_listeners_survive_a_large_background_sample ... FAILED"
+    ],
+    "file": "crates/remi-core/src/services.rs",
+    "id": "C10",
+    "outcome": "detected",
+    "package": "remi-core",
+    "target": [
+      "--lib"
+    ]
+  },
+  {
+    "after": "services.into_values().collect()",
+    "before": "services.into_values().take(SERVICE_LIMIT).collect()",
+    "description": "Remove the service summary bound",
+    "failed_tests": [],
+    "file": "crates/remi-core/src/services.rs",
+    "id": "C11",
+    "outcome": "survived",
+    "package": "remi-core",
+    "target": [
+      "--lib"
+    ]
+  },
+  {
+    "after": ".any(|a| canonical(a.ip()).is_loopback())",
+    "before": ".all(|a| canonical(a.ip()).is_loopback())",
+    "description": "Hide mixed network/loopback services as internal",
+    "failed_tests": [],
+    "file": "crates/remi-core/src/services.rs",
+    "id": "C12",
+    "outcome": "survived",
+    "package": "remi-core",
+    "target": [
+      "--lib"
+    ]
+  },
+  {
+    "after": "if take > limit {",
+    "before": "if line.len() + take > limit {",
+    "description": "Limit individual chunks instead of complete frames",
+    "failed_tests": [],
+    "file": "crates/remi-core/src/lib.rs",
+    "id": "C13",
+    "outcome": "survived",
+    "package": "remi-core",
+    "target": [
+      "--lib"
+    ]
+  },
+  {
+    "after": "if line.len() + take >= limit {",
+    "before": "if line.len() + take > limit {",
+    "description": "Reject a frame exactly at the allowed limit",
+    "failed_tests": [],
+    "file": "crates/remi-core/src/lib.rs",
+    "id": "C14",
+    "outcome": "survived",
+    "package": "remi-core",
+    "target": [
+      "--lib"
+    ]
+  },
+  {
+    "after": "(true || self.internal || !s.local_only())",
+    "before": "(self.internal || !s.local_only())",
+    "description": "Show internal services by default",
+    "failed_tests": [],
+    "file": "crates/remi-desktop/src/connections.rs",
+    "id": "D01",
+    "outcome": "survived",
+    "package": "remi-desktop",
+    "target": [
+      "--bin",
+      "remi"
+    ]
+  },
+  {
+    "after": "true\n                    && self.auto_refresh",
+    "before": "self.view == View::Services\n                    && self.auto_refresh",
+    "description": "Automatically refresh the fixed detail view",
+    "failed_tests": [
+      "test connections::tests::detail_stays_fixed_and_reconnect_refreshes_only_the_selected_port ... FAILED"
+    ],
+    "file": "crates/remi-desktop/src/connections.rs",
+    "id": "D02",
+    "outcome": "detected",
+    "package": "remi-desktop",
+    "target": [
+      "--bin",
+      "remi"
+    ]
+  },
+  {
+    "after": "if false && snapshot.port != expected_port {",
+    "before": "if snapshot.port != expected_port {",
+    "description": "Accept a reply for the wrong port",
+    "failed_tests": [
+      "test connections::tests::scope_mismatch_and_wrong_request_ids_preserve_cache_without_enabling_actions ... FAILED"
+    ],
+    "file": "crates/remi-desktop/src/connections.rs",
+    "id": "D03",
+    "outcome": "detected",
+    "package": "remi-desktop",
+    "target": [
+      "--bin",
+      "remi"
+    ]
+  },
+  {
+    "after": "if false && reply.id != request.id {",
+    "before": "if reply.id != request.id {",
+    "description": "Accept a reply for the wrong request ID",
+    "failed_tests": [],
+    "file": "crates/remi-desktop/src/connections.rs",
+    "id": "D04",
+    "outcome": "survived",
+    "package": "remi-desktop",
+    "target": [
+      "--bin",
+      "remi"
+    ]
+  },
+  {
+    "after": "(connected || true)\n            && self.sender.is_some()",
+    "before": "connected\n            && self.sender.is_some()",
+    "description": "Enable close while disconnected",
+    "failed_tests": [],
+    "file": "crates/remi-desktop/src/connections.rs",
+    "id": "D05",
+    "outcome": "survived",
+    "package": "remi-desktop",
+    "target": [
+      "--bin",
+      "remi"
+    ]
+  },
+  {
+    "after": "rows.sort_by_key(|r| std::cmp::Reverse((r.key.remote, r.key.local, r.key.cookie)));",
+    "before": "rows.sort_by_key(|r| (r.key.remote, r.key.local, r.key.cookie));",
+    "description": "Reverse connection ordering",
+    "failed_tests": [],
+    "file": "crates/remi-desktop/src/connections.rs",
+    "id": "D06",
+    "outcome": "survived",
+    "package": "remi-desktop",
+    "target": [
+      "--bin",
+      "remi"
+    ]
+  },
+  {
+    "after": "self.error = Some(message);",
+    "before": "self.error = Some(message);\n                self.last_received = None;",
+    "description": "Keep destructive actions enabled after an error",
+    "failed_tests": [],
+    "file": "crates/remi-desktop/src/connections.rs",
+    "id": "D07",
+    "outcome": "survived",
+    "package": "remi-desktop",
+    "target": [
+      "--bin",
+      "remi"
+    ]
+  },
+  {
+    "after": "if true =>",
+    "before": "if key == expected =>",
+    "description": "Accept a close acknowledgment for another socket",
+    "failed_tests": [],
+    "file": "crates/remi-desktop/src/connections.rs",
+    "id": "D08",
+    "outcome": "survived",
+    "package": "remi-desktop",
+    "target": [
+      "--bin",
+      "remi"
+    ]
+  },
+  {
+    "after": "if false && self.observer {\n            \"observer_session\"",
+    "before": "if self.observer {\n            \"observer_session\"",
+    "description": "Alert on Remi's own login",
+    "failed_tests": [
+      "test model::tests::own_login_stays_in_history_without_alerting_but_same_ip_other_session_alerts ... FAILED"
+    ],
+    "file": "crates/remi-desktop/src/model.rs",
+    "id": "D09",
+    "outcome": "detected",
+    "package": "remi-desktop",
+    "target": [
+      "--bin",
+      "remi"
+    ]
+  },
+  {
+    "after": "Some(Marker::Revoked) if false && same_key =>",
+    "before": "Some(Marker::Revoked) if same_key =>",
+    "description": "Accept a revoked host key",
+    "failed_tests": [
+      "test host_keys::tests::revoked_key_overrides_an_otherwise_valid_entry ... FAILED"
+    ],
+    "file": "crates/remi-desktop/src/host_keys.rs",
+    "id": "D10",
+    "outcome": "detected",
+    "package": "remi-desktop",
+    "target": [
+      "--bin",
+      "remi"
+    ]
+  },
+  {
+    "after": "if false && self.entries.iter().any(|entry| entry.cursor == cursor) {",
+    "before": "if self.entries.iter().any(|entry| entry.cursor == cursor) {",
+    "description": "Store the same journal cursor twice",
+    "failed_tests": [
+      "test tests::store_survives_restart_deduplicates_and_enforces_retention ... FAILED"
+    ],
+    "file": "crates/remi-agent/src/main.rs",
+    "id": "A01",
+    "outcome": "detected",
+    "package": "remi-agent",
+    "target": [
+      "--bin",
+      "remi-agent"
+    ]
+  },
+  {
+    "after": "*self = next.clone();\n        next.save(path)?;",
+    "before": "next.save(path)?;\n        *self = next;",
+    "description": "Advance the event cursor before persistence succeeds",
+    "failed_tests": [
+      "test tests::failed_persistence_does_not_advance_event_cursor ... FAILED"
+    ],
+    "file": "crates/remi-agent/src/main.rs",
+    "id": "A02",
+    "outcome": "detected",
+    "package": "remi-agent",
+    "target": [
+      "--bin",
+      "remi-agent"
+    ]
+  },
+  {
+    "after": "&& true",
+    "before": "&& event.source_port == self.connection.remote.port()",
+    "description": "Suppress other SSH sessions on the same source IP",
+    "failed_tests": [
+      "test observer::tests::only_this_ssh_process_and_endpoint_match_including_delayed_replay ... FAILED"
+    ],
+    "file": "crates/remi-agent/src/observer.rs",
+    "id": "A03",
+    "outcome": "detected",
+    "package": "remi-agent",
+    "target": [
+      "--bin",
+      "remi-agent"
+    ]
+  },
+  {
+    "after": "origin.monotonic_micros > *started",
+    "before": "origin.monotonic_micros >= *started",
+    "description": "Reject a login at the process start timestamp",
+    "failed_tests": [],
+    "file": "crates/remi-agent/src/observer.rs",
+    "id": "A04",
+    "outcome": "survived",
+    "package": "remi-agent",
+    "target": [
+      "--bin",
+      "remi-agent"
+    ]
+  },
+  {
+    "after": "true && origin.monotonic_micros",
+    "before": "origin.pid == *pid && origin.monotonic_micros",
+    "description": "Ignore the SSH process identity",
+    "failed_tests": [
+      "test observer::tests::only_this_ssh_process_and_endpoint_match_including_delayed_replay ... FAILED"
+    ],
+    "file": "crates/remi-agent/src/observer.rs",
+    "id": "A05",
+    "outcome": "detected",
+    "package": "remi-agent",
+    "target": [
+      "--bin",
+      "remi-agent"
+    ]
+  },
+  {
+    "after": "service.connections = 1 + service.connections;",
+    "before": "service.connections += 1;",
+    "description": "Equivalent addition order (negative control)",
+    "failed_tests": [],
+    "file": "crates/remi-core/src/services.rs",
+    "id": "E01",
+    "outcome": "control_passed",
+    "package": "remi-core",
+    "target": [
+      "--lib"
+    ]
+  }
+]

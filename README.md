@@ -124,6 +124,8 @@ Contributions target `staging`. Run formatting, Clippy, tests and applicable vis
 
 ## Validation of this MVP
 
+The 2026-11-09 [mutation audit](tests/MUTATIONS.md) deliberately introduced 32 compiling behavioral faults: the original tests detected 18; strengthened tests detect all 32 in this curated sample. Two behavior-preserving controls still pass. Reproduce the native audit with `cargo xtask mutate`, or the Linux socket cases with `cargo xtask mutate --linux` inside a disposable Linux environment.
+
 Service administration 0.3.0 was checked on 2026-11-09 UTC with 43 passing macOS tests, 30 passing Linux tests and visible interaction against the actual Debian testing server; see [service-view acceptance](tests/SERVICES.md) for stable detail, scoped queries, reconnect and disposable-session closure checks.
 
 Connection control 0.2.0 was checked on 2026-11-06 with real Debian kernel sockets and visible macOS interaction; see [connection acceptance](tests/CONNECTIONS.md) for the checklist, permissions and environment limits.
