@@ -67,10 +67,18 @@ pub async fn serve() -> Result<()> {
             Err(error) => {
                 warn!(action = "connection_control_privilege_unavailable", request_id = id, error = %error);
                 // Listing is available without sudo, with explicitly limited process visibility.
-                let result = if matches!(helper_action(&line)?, ControlAction::List) {
+                let action = helper_action(&line)?;
+                let result = if matches!(
+                    action,
+                    ControlAction::List | ControlAction::ListService { .. }
+                ) {
+                    let port = match action {
+                        ControlAction::ListService { port } => Some(port),
+                        _ => None,
+                    };
                     let observer = observer.clone();
                     match tokio::task::spawn_blocking(move || {
-                        sockets::snapshot(observer.as_ref(), false)
+                        sockets::snapshot_port(observer.as_ref(), false, port)
                     })
                     .await?
                     {
@@ -160,6 +168,17 @@ fn execute(helper: HelperRequest) -> ControlReply {
             );
             ControlResult::Snapshot { snapshot }
         }),
+        ControlAction::ListService { port } => {
+            sockets::snapshot_port(helper.observer.as_ref(), true, Some(port)).map(|snapshot| {
+                info!(
+                    action = "service_connections_snapshot",
+                    request_id = id,
+                    port,
+                    count = snapshot.total
+                );
+                ControlResult::Snapshot { snapshot }
+            })
+        }
         ControlAction::Close { key } => {
             audit(id, &key, "requested", None);
             let closed = helper

@@ -194,6 +194,7 @@ impl Remi {
         self.pending_host = None;
         let endpoint = self.draft.endpoint();
         if endpoint != self.state.endpoint {
+            self.connections.clear();
             self.state.instance = None;
             self.state.cursor = 0;
         }

@@ -8,12 +8,16 @@ pub fn snapshot(_: Option<&Observer>, _: bool) -> Result<ConnectionsSnapshot> {
     bail!("La gestión de conexiones requiere un agente en Linux");
 }
 #[cfg(not(target_os = "linux"))]
+pub fn snapshot_port(_: Option<&Observer>, _: bool, _: Option<u16>) -> Result<ConnectionsSnapshot> {
+    bail!("La gestión de conexiones requiere un agente en Linux");
+}
+#[cfg(not(target_os = "linux"))]
 pub fn close(_: &SocketKey, _: &Observer) -> Result<()> {
     bail!("La gestión de conexiones requiere un agente en Linux");
 }
 
 #[cfg(target_os = "linux")]
-pub use linux::{close, snapshot};
+pub use linux::{close, snapshot, snapshot_port};
 
 #[cfg(target_os = "linux")]
 mod linux {
@@ -322,6 +326,17 @@ mod linux {
     }
 
     pub fn snapshot(observer: Option<&Observer>, privileged: bool) -> Result<ConnectionsSnapshot> {
+        snapshot_port(observer, privileged, None)
+    }
+
+    pub fn snapshot_port(
+        observer: Option<&Observer>,
+        privileged: bool,
+        port: Option<u16>,
+    ) -> Result<ConnectionsSnapshot> {
+        if port == Some(0) {
+            bail!("El puerto debe estar entre 1 y 65535");
+        }
         let mut rows = exchange(QUERY, 2, None).context("No se pudo leer TCP IPv4")?;
         match exchange(QUERY, 10, None) {
             Ok(v6) => rows.extend(v6),
@@ -337,18 +352,22 @@ mod linux {
         for row in &mut rows {
             row.protected = observer.is_some_and(|o| o.protects(&row.key));
         }
-        rows.sort_by_key(|row| {
-            (
-                !row.protected,
-                row.state == 10,
-                row.key.local,
-                row.key.remote,
-                row.key.cookie,
-            )
-        });
-        let total = rows.len();
+        let mut overview = remi_core::services::ServiceOverview::from_rows(&rows);
+        let total = rows
+            .iter()
+            .filter(|r| port.is_none_or(|p| r.key.local.port() == p))
+            .count();
+        // Count first, then sample. Retain listener metadata even for a scoped request.
+        if let Some(port) = port {
+            rows.retain(|r| r.state == 10 || r.key.local.port() == port);
+        }
+        remi_core::services::prioritize(&mut rows, &overview);
         rows.truncate(SNAPSHOT_LIMIT);
         let incomplete = describe_processes(&mut rows);
+        overview.enrich(&rows);
+        if let Some(port) = port {
+            rows.retain(|r| r.key.local.port() == port);
+        }
         let has_net_admin = privileged && net_admin();
         let supports_close = has_net_admin && destroy_supported();
         let can_close = supports_close && observer.is_some();
@@ -380,6 +399,8 @@ mod linux {
             total,
             can_close,
             limitation: (!limitations.is_empty()).then(|| limitations.join(". ")),
+            overview: Some(overview),
+            port,
         })
     }
 

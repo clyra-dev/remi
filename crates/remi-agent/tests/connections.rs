@@ -67,8 +67,51 @@ async fn control_protocol_lists_real_sockets_and_refuses_close_without_observer(
                 && r.key.remote == client.local_addr().unwrap()
         })
         .unwrap();
-    let request = ControlRequest {
+    assert!(snapshot.overview.is_some());
+    let port = server.local_addr().unwrap().port();
+    let scoped = ControlRequest {
         id: 2,
+        action: ControlAction::ListService { port },
+    };
+    stdin
+        .write_all(format!("{}\n", serde_json::to_string(&scoped).unwrap()).as_bytes())
+        .await
+        .unwrap();
+    let reply: ControlReply = serde_json::from_str(
+        &tokio::time::timeout(
+            Duration::from_secs(15),
+            read_line_bounded(&mut output, CONTROL_FRAME_BYTES),
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(reply.id, 2);
+    let ControlResult::Snapshot { snapshot: scoped } = reply.result else {
+        panic!("not a scoped snapshot")
+    };
+    assert_eq!(scoped.port, Some(port));
+    assert!(!scoped.connections.is_empty());
+    assert!(
+        scoped
+            .connections
+            .iter()
+            .all(|r| r.key.local.port() == port)
+    );
+    assert_eq!(
+        scoped
+            .overview
+            .as_ref()
+            .unwrap()
+            .service(port)
+            .unwrap()
+            .connections,
+        1
+    );
+    let request = ControlRequest {
+        id: 3,
         action: ControlAction::Close {
             key: row.key.clone(),
         },
@@ -88,7 +131,7 @@ async fn control_protocol_lists_real_sockets_and_refuses_close_without_observer(
         .unwrap(),
     )
     .unwrap();
-    assert_eq!(reply.id, 2);
+    assert_eq!(reply.id, 3);
     assert!(matches!(reply.result, ControlResult::Error { .. }));
     drop(stdin);
     assert!(

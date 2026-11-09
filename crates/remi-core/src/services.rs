@@ -1,0 +1,236 @@
+//! A compact view of listening ports, counted before the detail sample is bounded.
+use crate::connections::TcpConnection;
+use serde::{Deserialize, Serialize};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    net::{IpAddr, SocketAddr},
+};
+
+pub const SERVICE_LIMIT: usize = 256;
+
+pub fn canonical(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V6(v6) => v6.to_ipv4_mapped().map(IpAddr::V4).unwrap_or(ip),
+        _ => ip,
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TcpService {
+    pub port: u16,
+    pub addresses: Vec<SocketAddr>,
+    pub programs: Vec<String>,
+    pub connections: usize,
+    pub clients: usize,
+}
+impl TcpService {
+    pub fn local_only(&self) -> bool {
+        !self.addresses.is_empty()
+            && self
+                .addresses
+                .iter()
+                .all(|a| canonical(a.ip()).is_loopback())
+    }
+    pub fn name(&self) -> String {
+        if self
+            .programs
+            .iter()
+            .any(|n| matches!(n.as_str(), "sshd" | "sshd-session"))
+        {
+            "SSH".into()
+        } else if self.programs.is_empty() {
+            "Servicio TCP".into()
+        } else {
+            self.programs
+                .iter()
+                .take(2)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(" / ")
+        }
+    }
+    pub fn accepts(&self, row: &TcpConnection) -> bool {
+        self.port == row.key.local.port()
+            && self.addresses.iter().any(|a| {
+                let bind = canonical(a.ip());
+                let local = canonical(row.key.local.ip());
+                bind == local || (bind.is_unspecified() && (bind.is_ipv6() || local.is_ipv4()))
+            })
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ServiceOverview {
+    pub services: Vec<TcpService>,
+    pub total_services: usize,
+    pub connections: usize,
+    pub other_connections: usize,
+}
+impl ServiceOverview {
+    pub fn from_rows(rows: &[TcpConnection]) -> Self {
+        let mut services = BTreeMap::<u16, TcpService>::new();
+        for row in rows.iter().filter(|r| r.state == 10) {
+            let service = services
+                .entry(row.key.local.port())
+                .or_insert_with(|| TcpService {
+                    port: row.key.local.port(),
+                    addresses: vec![],
+                    programs: vec![],
+                    connections: 0,
+                    clients: 0,
+                });
+            if !service.addresses.contains(&row.key.local) {
+                service.addresses.push(row.key.local);
+                service.addresses.sort();
+            }
+        }
+        let mut clients = BTreeMap::<u16, BTreeSet<IpAddr>>::new();
+        let mut other_connections = 0;
+        let mut connections = 0;
+        for row in rows.iter().filter(|r| r.state != 10) {
+            if let Some(service) = services
+                .get_mut(&row.key.local.port())
+                .filter(|s| s.accepts(row))
+            {
+                service.connections += 1;
+                clients
+                    .entry(service.port)
+                    .or_default()
+                    .insert(canonical(row.key.remote.ip()));
+                connections += 1;
+            } else {
+                other_connections += 1;
+            }
+        }
+        for (port, service) in &mut services {
+            service.clients = clients.get(port).map_or(0, BTreeSet::len);
+        }
+        let total_services = services.len();
+        let mut overview = Self {
+            services: services.into_values().take(SERVICE_LIMIT).collect(),
+            total_services,
+            connections,
+            other_connections,
+        };
+        overview.enrich(rows);
+        overview
+    }
+    pub fn service(&self, port: u16) -> Option<&TcpService> {
+        self.services
+            .binary_search_by_key(&port, |s| s.port)
+            .ok()
+            .map(|i| &self.services[i])
+    }
+    pub fn enrich(&mut self, rows: &[TcpConnection]) {
+        // Metadata is read only for the bounded detail sample, with listeners prioritized.
+        for row in rows.iter().filter(|r| r.state == 10) {
+            if let Ok(i) = self
+                .services
+                .binary_search_by_key(&row.key.local.port(), |s| s.port)
+            {
+                let programs = &mut self.services[i].programs;
+                for process in &row.processes {
+                    if programs.len() < 8 && !programs.contains(&process.name) {
+                        programs.push(process.name.clone());
+                    }
+                }
+                programs.sort();
+            }
+        }
+    }
+}
+
+pub fn prioritize(rows: &mut [TcpConnection], overview: &ServiceOverview) {
+    rows.sort_by_key(|row| {
+        let rank = if row.protected {
+            0
+        } else if row.state == 10 {
+            1
+        } else if overview
+            .service(row.key.local.port())
+            .is_some_and(|s| s.accepts(row))
+        {
+            2
+        } else {
+            3
+        };
+        (
+            rank,
+            row.key.local.port(),
+            row.key.local,
+            row.key.remote,
+            row.key.cookie,
+        )
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::connections::{ProcessInfo, SNAPSHOT_LIMIT, SocketKey};
+    fn row(local: &str, remote: &str, state: u8) -> TcpConnection {
+        TcpConnection {
+            key: SocketKey {
+                local: local.parse().unwrap(),
+                remote: remote.parse().unwrap(),
+                interface: 0,
+                cookie: [1, 2],
+                inode: 20,
+            },
+            state,
+            uid: 0,
+            user: "root".into(),
+            processes: vec![],
+            protected: false,
+        }
+    }
+    #[test]
+    fn groups_dual_stack_ports_and_counts_clients_without_assuming_public_exposure() {
+        let mut rows = vec![
+            row("0.0.0.0:22", "0.0.0.0:0", 10),
+            row("[::]:22", "[::]:0", 10),
+            row("192.0.2.1:22", "198.51.100.2:40000", 1),
+            row("[::ffff:192.0.2.1]:22", "[::ffff:198.51.100.2]:40001", 1),
+            row("[::ffff:127.0.0.1]:9000", "[::]:0", 10),
+            row("127.0.0.1:9000", "127.0.0.1:45000", 1),
+            row("192.0.2.1:9000", "198.51.100.2:45000", 1),
+        ];
+        rows[0].processes.push(ProcessInfo {
+            pid: 10,
+            name: "sshd".into(),
+        });
+        let overview = ServiceOverview::from_rows(&rows);
+        assert_eq!(overview.total_services, 2);
+        let ssh = overview.service(22).unwrap();
+        assert_eq!(ssh.name(), "SSH");
+        assert_eq!(
+            (ssh.connections, ssh.clients, ssh.addresses.len()),
+            (2, 1, 2)
+        );
+        assert!(!ssh.local_only());
+        assert!(overview.service(9000).unwrap().local_only());
+        assert_eq!((overview.connections, overview.other_connections), (3, 1));
+    }
+    #[test]
+    fn full_counts_and_listeners_survive_a_large_background_sample() {
+        let mut rows = (0..1500)
+            .map(|i| row(&format!("192.0.2.1:{}", 30000 + i), "198.51.100.1:443", 1))
+            .collect::<Vec<_>>();
+        rows.push(row("0.0.0.0:22", "0.0.0.0:0", 10));
+        rows.push(row("192.0.2.1:22", "198.51.100.2:45000", 1));
+        let overview = ServiceOverview::from_rows(&rows);
+        assert_eq!(
+            (
+                overview.total_services,
+                overview.connections,
+                overview.other_connections
+            ),
+            (1, 1, 1500)
+        );
+        prioritize(&mut rows, &overview);
+        rows.truncate(SNAPSHOT_LIMIT);
+        assert_eq!(rows[0].state, 10);
+        assert_eq!(rows[1].key.local.port(), 22);
+        assert_eq!(overview.other_connections, 1500);
+    }
+}

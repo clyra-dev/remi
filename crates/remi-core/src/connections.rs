@@ -114,12 +114,18 @@ pub struct ConnectionsSnapshot {
     pub total: usize,
     pub can_close: bool,
     pub limitation: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overview: Option<crate::services::ServiceOverview>,
+    /// None is the server-wide technical sample; Some limits detail to one local port.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ControlAction {
     List,
+    ListService { port: u16 },
     Close { key: SocketKey },
 }
 

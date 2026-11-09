@@ -14,7 +14,7 @@ All application, interface, transport, agent, packaging-helper and build-tool co
 - Remi's own SSH sessions stay in history without desktop alerts; other sessions from the same IP still follow your alert policy.
 - Dedicated `remi` service account, durable bounded history, systemd service, `.deb` lifecycle, signed APT repository generation.
 - SSH host identity verification and authentication using an SSH agent or private-key file. Passphrases are held in memory, never persisted.
-- Live TCP connections and listening ports, IPv4 / IPv6, with socket owner, process name and PID where visible.
+- A service-first administration view: listening ports, connection/client counts, focused per-port inspection and an optional technical view.
 - Explicitly confirmed closure of one TCP connection, kernel-cookie verification, protection of Remi's own SSH session and system-journal auditing.
 
 TCP connection alerts, UDP control, stopping listening services and multiple servers are future work. This version reports SSH policy deviations; it cannot identify whether a valid SSH credential was stolen. A compromised root account can tamper with local telemetry.
@@ -24,7 +24,7 @@ TCP connection alerts, UDP control, stopping listening services and multiple ser
 Supported packaging targets: Debian 12 / 13, `arm64` and `amd64`, with systemd and OpenSSH. Use the package matching your machine (`dpkg --print-architecture`).
 
 ```sh
-sudo apt install ./remi-agent_0.2.1_arm64.deb
+sudo apt install ./remi-agent_0.3.0_arm64.deb
 sudo remi-agent authorize YOUR_SSH_USER
 ```
 
@@ -56,9 +56,13 @@ If identity metadata is missing or cannot be verified, normal alerts remain enab
 
 ## Live connections
 
-Open **Conexiones** on macOS with agent 0.2.0 or newer. The list refreshes every five seconds while this page is visible. Search IPs, ports, process names or socket owners, and optionally hide listening ports. Socket ownership is the kernel UID; for SSH it may be `root`/`sshd`, rather than the authenticated login user shown in Activity. The list covers the agent's network namespace; sockets inside separate Docker/container namespaces are not enumerated. A snapshot contains at most 1,024 rows and explicitly reports truncation. TIME_WAIT and CLOSED entries are omitted.
+Open **Conexiones** with desktop and agent 0.3.0. The default **Servicios** view groups listening sockets by local port, merges IPv4/IPv6 bindings and shows process names plus connection/client counts. Loopback-only services are hidden until **Incluir internos** is selected. The summary updates every ten seconds in port order; connection churn does not reorder cards. A network binding means the process listens on that interface, not that a firewall or cloud policy exposes it publicly.
 
-Select **Cerrar conexión**, review both endpoints and the interruption warning, then **Confirmar cierre**. Remi rechecks the exact tuple, inode and kernel cookie before requesting `SOCK_DESTROY`, so a stale selection cannot target a replacement socket. The current SSH transport is protected on both sides, including IPv4-mapped IPv6 addresses. Listening ports remain informational; closing an established connection leaves the owning process and listener running. A client can reconnect afterward: this is not an IP block or firewall rule. A lost acknowledgment is reported as unconfirmed and the close request is never replayed on reconnect.
+Choose **Ver conexiones** to inspect one port. This detail view stays fixed until **Actualizar**, reconnect or a confirmed close; search, selection and pagination remain under your control. Only six rows are rendered per page. **Vista técnica** exposes the general TCP sample and can query a specific local port. The most recent data remains visible but non-actionable during disconnects, and changing servers clears the cache.
+
+The agent computes service counts before limiting detail rows and prioritizes listeners. It reports up to 256 port groups; detail queries contain at most 1,024 rows with explicit truncation. A per-port query filters on the server before the detail sample is bounded, so busy unrelated services cannot consume its whole sample. Other listener metadata may reserve part of that bound. Older agents remain usable with an explicitly partial summary and no scoped query support. Socket ownership is the kernel UID; for SSH it may be `root`/`sshd`, rather than the authenticated login user shown in Activity. The list covers the agent's network namespace; sockets inside separate Docker/container namespaces are not enumerated. TIME_WAIT and CLOSED entries are omitted.
+
+Select **Cerrar conexión**, review both endpoints and the interruption warning, then **Confirmar cierre**. A fixed detail view does not expire an open confirmation after fifteen seconds; the server rechecks the exact tuple, inode and kernel cookie before requesting `SOCK_DESTROY`, so a stale selection cannot target a replacement socket. A disconnected or failed query disables actions until fresh data arrives. The current SSH transport is protected on both sides, including IPv4-mapped IPv6 addresses. Listening ports remain informational; closing an established connection leaves the owning process and listener running. A client can reconnect afterward: this is not an IP block or firewall rule. A lost acknowledgment is reported as unconfirmed and the close request is never replayed on reconnect.
 
 The collector continues running as `remi` with its existing systemd restrictions. A separate channel on the same SSH session invokes the Rust `remi-agent connections` command. Inspection falls back to read-only operation when administrative access is unavailable. Full process visibility and closure use `sudo -n -- /usr/bin/remi-agent socket-helper` on demand, with bounded typed requests through stdin. Closing requires `CAP_NET_ADMIN`, a recognized observer connection and a kernel built with `CONFIG_INET_DIAG_DESTROY`; unsupported environments show a read-only explanation. No shell command, PID kill, wildcard-port filter, extra listener or automatic sudoers change is used. An existing administrative SSH account with passwordless sudo can operate the feature; other accounts retain read-only access unless an administrator deliberately configures a suitable policy.
 
@@ -119,6 +123,8 @@ This repository includes the generator; no public APT URL, production signing ke
 Contributions target `staging`. Run formatting, Clippy, tests and applicable visible macOS acceptance flows before proposing changes. MIT licensed.
 
 ## Validation of this MVP
+
+Service administration 0.3.0 was checked on 2026-11-09 UTC with 43 passing macOS tests, 30 passing Linux tests and visible interaction against the actual Debian testing server; see [service-view acceptance](tests/SERVICES.md) for stable detail, scoped queries, reconnect and disposable-session closure checks.
 
 Connection control 0.2.0 was checked on 2026-11-06 with real Debian kernel sockets and visible macOS interaction; see [connection acceptance](tests/CONNECTIONS.md) for the checklist, permissions and environment limits.
 

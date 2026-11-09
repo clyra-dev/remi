@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::{fs, io::Write, net::IpAddr, path::Path};
 
 pub mod connections;
+pub mod services;
 
 pub const PROTOCOL: u32 = 1;
 pub const MAX_FRAME_BYTES: usize = 64 * 1024;

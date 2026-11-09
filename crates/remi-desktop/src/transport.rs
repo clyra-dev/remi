@@ -385,9 +385,14 @@ async fn connection_control(channel: russh::Channel<client::Msg>, updates: &Upda
     info!(action = "connection_control_ready");
     while let Some(request) = rx.recv().await {
         let close = matches!(request.action, ControlAction::Close { .. });
+        let port = match &request.action {
+            ControlAction::ListService { port } => Some(*port),
+            _ => None,
+        };
         info!(
             action = "connection_control_request",
             request_id = request.id,
+            port,
             close
         );
         let mut bytes = serde_json::to_vec(&request)?;
